@@ -1,0 +1,34 @@
+{
+  "name": "gameserver-mgr",
+  "version": "0.4.20",
+  "description": "plugin based gameserver manager",
+  "main": "app/main.mjs",
+  "scripts": {
+    "test": "npx eslint app/"
+  },
+  "author": "Edwin Pers",
+  "license": "CC-BY-NC-SA-4.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/honkhost/gameserver-mgr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/honkhost/gameserver-mgr/issues"
+  },
+  "homepage": "https://github.com/honkhost/gameserver-mgr#readme",
+  "dependencies": {
+    "ee-log": "^3.0.9",
+    "node-pty": "^0.10.1"
+  },
+  "devDependencies": {
+    "@babel/eslint-plugin": "^7.19.1",
+    "@babel/plugin-syntax-top-level-await": "^7.14.5",
+    "eslint": "^8.40.0",
+    "eslint-config-prettier": "^8.8.0",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-prettier": "^4.2.1",
+    "eslint-plugin-promise": "^6.1.1",
+    "eslint-plugin-security": "^1.7.1",
+    "prettier": "^2.8.8"
+  }
+}
