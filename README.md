@@ -1,2 +1,2 @@
 # gameserver-mgr
-[WIP] Plugin based gameserver manager
+[WIP] Microservices based gameserver manager

@@ -2,9 +2,16 @@
   "name": "gameserver-mgr",
   "version": "0.4.20",
   "description": "plugin based gameserver manager",
-  "main": "app/main.mjs",
+  "main": "app/bin/init.mjs",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
-    "test": "npx eslint app/"
+    "test": "npx eslint app/",
+    "cli": "DOTENV_CONFIG_PATH=./.env.cli node -r dotenv/config app/bin/cli.mjs",
+    "config-manager": "node -r dotenv/config app/bin/configManager.mjs",
+    "download-manager": "node -r dotenv/config app/bin/downloadManager.mjs",
+    "lifecycle-manager": "node -r dotenv/config app/bin/lifecycleManager.mjs"
   },
   "author": "Edwin Pers",
   "license": "CC-BY-NC-SA-4.0",
@@ -17,12 +24,24 @@
   },
   "homepage": "https://github.com/honkhost/gameserver-mgr#readme",
   "dependencies": {
+    "chalk": "^5.2.0",
     "ee-log": "^3.0.9",
-    "node-pty": "^0.10.1"
+    "lockfile": "^1.0.4",
+    "loglevel": "^1.8.1",
+    "loglevel-plugin-prefix": "^0.8.4",
+    "needle": "^3.2.0",
+    "node-pty": "^0.10.1",
+    "qlobber-fsq": "^13.0.3",
+    "signal-exit": "^4.0.2",
+    "simple-git": "^3.19.1",
+    "tar": "^6.1.14",
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
     "@babel/eslint-plugin": "^7.19.1",
+    "@babel/plugin-syntax-dynamic-import": "^7.8.3",
     "@babel/plugin-syntax-top-level-await": "^7.14.5",
+    "dotenv": "^16.1.4",
     "eslint": "^8.40.0",
     "eslint-config-prettier": "^8.8.0",
     "eslint-plugin-node": "^11.1.0",
