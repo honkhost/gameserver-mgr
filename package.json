@@ -2,7 +2,7 @@
   "name": "gameserver-mgr",
   "version": "0.4.20",
   "description": "plugin based gameserver manager",
-  "main": "app/bin/main.mjs",
+  "main": "app/bin/init.mjs",
   "scripts": {
     "test": "npx eslint app/"
   },
@@ -18,8 +18,10 @@
   "homepage": "https://github.com/honkhost/gameserver-mgr#readme",
   "dependencies": {
     "ee-log": "^3.0.9",
+    "lockfile": "^1.0.4",
     "needle": "^3.2.0",
     "node-pty": "^0.10.1",
+    "qlobber-fsq": "^13.0.3",
     "tar": "^6.1.14",
     "yargs": "^17.7.2"
   },

@@ -4,6 +4,10 @@
 import { timestamp } from '../lib/timestamp.mjs';
 import { parseBool } from '../lib/parseBool.mjs';
 
+// Nodejs stdlib
+import { default as path } from 'node:path';
+import { default as Stream } from 'node:stream';
+
 // External libs
 import { default as elog } from 'ee-log';
 
@@ -23,6 +27,11 @@ console.log(`[${timestamp()}] honk.host gameserver manager v0.4.20`);
 console.log(logo);
 
 // Config
+const _serverFilesDir = process.env.SERVER_FILES_DIR || '/opt/serverfiles';
+const serverFilesDir = path.resolve(path.normalize(_serverFilesDir));
+
+const _steamCmdDir = process.env.STEAMCMD_DIR || '/opt/steamcmd';
+const steamCmdDir = path.resolve(path.normalize(_steamCmdDir));
 
 // Determine game type
 
