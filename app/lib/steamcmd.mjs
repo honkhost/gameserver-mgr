@@ -110,7 +110,7 @@ export function steamCmdDownloadAppid(
     }
 
     // Clean up old game files if specified
-    if (options.serverFilesForce) {
+    if (serverFilesForce) {
       log.debug(`steamCmdDownloadAppid options.serverFilesForce is true, removing old server installation`);
       fs.rmSync(path.normalize(path.resolve(`${serverFilesDir}`)), { recursive: true, force: true });
     }
@@ -124,6 +124,8 @@ export function steamCmdDownloadAppid(
           recursive: true,
           mode: 0o755,
         });
+      } else {
+        return reject(error);
       }
     });
 
@@ -348,6 +350,7 @@ export function runSteamCmd(
       if (code.exitCode === 42) {
         // Spawn steamcmd again, saving the exit code to retryExitCode
         log.info('Steamcmd exited with code 42, re-launching...');
+        outputSink.push('Steamcmd exited with code 42, re-launching...');
         var retryExitCode = null;
         try {
           retryExitCode = await runSteamCmd(options, outputSink);

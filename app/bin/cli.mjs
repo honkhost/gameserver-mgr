@@ -128,7 +128,7 @@ function sendMessage(argv) {
   const msg = {
     msgId: msgId,
     timestamp: Date.now(),
-    msg: argv.message,
+    message: argv.message,
     replyTo: `${moduleIdent}.${msgId}`,
   };
 
@@ -164,7 +164,7 @@ function downloadGame(argv) {
     anonymous: argv.username ? false : true,
     username: argv.username || undefined,
     password: argv.password || undefined,
-    serverFilesForce: argv.serverFilesForce || false,
+    serverFilesForce: argv.force || false,
   };
 
   log.info(`Sending request for ${request.gameId} to the download manager`);
