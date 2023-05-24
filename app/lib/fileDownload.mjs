@@ -1,5 +1,8 @@
 'use strict';
 
+// Our libs
+import { setupLog } from './log.mjs';
+
 // Nodejs stdlib
 import { default as fs } from 'node:fs';
 import { default as path } from 'node:path';
@@ -8,6 +11,16 @@ import { default as path } from 'node:path';
 import { default as needle } from 'needle';
 import { default as tar } from 'tar';
 
+const log = setupLog('lib/fileDownload.mjs');
+
+/**
+ * Download a file from a url
+ * @param {String} url - the url of the file to download
+ * @param {String} outputPath - the path to save the file to
+ * @param {Object.<Boolean>} options - the options for the download
+ * @param {Boolean} options.untar - untar the file if set to true
+ * @returns {Promise} resolves when file download is completed, rejects on error
+ */
 export function downloadFile(
   url = '',
   outputPath = '',
@@ -15,6 +28,7 @@ export function downloadFile(
     untar: false,
   },
 ) {
+  log.debug(`Attempting download of ${url.split('/')[url.split('/').length - 1]} to ${outputPath}`);
   return new Promise((resolve, reject) => {
     if (!url) {
       return reject('url required');
@@ -30,18 +44,19 @@ export function downloadFile(
     needle
       .get(url)
       .pipe(outputFile)
-      .on('done', (err) => {
-        if (err) return reject(err);
+      .on('done', async (error) => {
+        if (error) return reject(error);
+        log.debug(`Completed download of ${url.split('/')[url.split('/').length - 1]} to ${outputPath}`);
         if (options.untar) {
           // eslint-disable-next-line promise/no-promise-in-callback
-          extractTarGz(normalizedFilePath, {
+          await extractTarGz(normalizedFilePath, {
             cwd: normalizedCwdPath,
           })
             .then(() => {
               return resolve();
             })
-            .catch((err) => {
-              return reject(err);
+            .catch((error) => {
+              return reject(error);
             });
         } else {
           return resolve();
@@ -50,7 +65,16 @@ export function downloadFile(
   });
 }
 
+/**
+ * Extract a tar.gz file
+ * @param {String} file - the path to the tar.gz file
+ * @param {Object.<Number, String>} options - tar options
+ * @param {Number} options.strip - tar --strip=N
+ * @param {String} options.cwd - tar -C /some/path
+ * @returns {Promise} resolves when file download is completed, rejects on error
+ */
 export function extractTarGz(file = '', options = {}) {
+  log.debug(`Attempting untar of ${file} with ${JSON.stringify(options)}`);
   return new Promise((resolve, reject) => {
     // Build tar options
     // For now only strip and cwd are supported/needed
@@ -70,15 +94,14 @@ export function extractTarGz(file = '', options = {}) {
 
     // Read the file in and extract it
     tar
-      .extract(tarOptions, (err) => {
-        if (err) return reject(err);
-        return resolve();
-      })
+      .extract(tarOptions)
       .then(() => {
+        log.debug(`Completed untar of ${file} with ${JSON.stringify(options)}`);
         return resolve();
       })
-      .catch((err) => {
-        return reject(err);
+      .catch((error) => {
+        log.error(`Error untaring ${file}: ${error}`);
+        return reject(error);
       });
   });
 }

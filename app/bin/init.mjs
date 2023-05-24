@@ -1,37 +1,61 @@
 'use strict';
 
 // Our libraries
-import { timestamp } from '../lib/timestamp.mjs';
-import { parseBool } from '../lib/parseBool.mjs';
+import { setupIpc, setPingReply } from '../lib/ipc.mjs';
+import { lockFile } from '../lib/lockfile.mjs';
+import { setupTerminationSignalHandlers } from '../lib/exitHandlers.mjs';
+import { setupLog, isoTimestamp } from '../lib/log.mjs';
 
-// Nodejs stdlib
-import { default as path } from 'node:path';
-import { default as Stream } from 'node:stream';
-
-// External libs
-import { default as elog } from 'ee-log';
-
-// Loud but useful
-const debug = parseBool(process.env.DEBUG) || true;
+const moduleIdent = 'init';
 
 // Very important
-const logo = ` _                 _      _               _   
-| |               | |    | |             | |  
-| |__   ___  _ __ | | __ | |__   ___  ___| |_ 
-| '_ \\ / _ \\| '_ \\| |/ / | '_ \\ / _ \\/ __| __|
-| | | | (_) | | | |   < _| | | | (_) \\__ \\ |_ 
-|_| |_|\\___/|_| |_|_|\\_(_)_| |_|\\___/|___/\\__|`;
 
-console.log(`[${timestamp()}] --- Logs begin at ${timestamp()} ---`);
-console.log(`[${timestamp()}] honk.host gameserver manager v0.4.20`);
+const logo = `
+  ██╗░░██╗░█████╗░███╗░░██╗██╗░░██╗░░░██╗░░██╗░█████╗░░██████╗████████╗
+  ██║░░██║██╔══██╗████╗░██║██║░██╔╝░░░██║░░██║██╔══██╗██╔════╝╚══██╔══╝
+  ███████║██║░░██║██╔██╗██║█████═╝░░░░███████║██║░░██║╚█████╗░░░░██║░░░
+  ██╔══██║██║░░██║██║╚████║██╔═██╗░░░░██╔══██║██║░░██║░╚═══██╗░░░██║░░░
+  ██║░░██║╚█████╔╝██║░╚███║██║░╚██╗██╗██║░░██║╚█████╔╝██████╔╝░░░██║░░░
+  ╚═╝░░╚═╝░╚════╝░╚═╝░░╚══╝╚═╝░░╚═╝╚═╝╚═╝░░╚═╝░╚════╝░╚═════╝░░░░╚═╝░░░
+`;
+
 console.log(logo);
 
-// Config
-const _serverFilesDir = process.env.SERVER_FILES_DIR || '/opt/serverfiles';
-const serverFilesDir = path.resolve(path.normalize(_serverFilesDir));
+//
+// Start boilerplate
 
-const _steamCmdDir = process.env.STEAMCMD_DIR || '/opt/steamcmd';
-const steamCmdDir = path.resolve(path.normalize(_steamCmdDir));
+// Setup logger
+const log = setupLog('bin/init.mjs');
+
+log.info('honk.host gameserver manager v0.4.20');
+log.info(`--- Logs begin at ${isoTimestamp()} ---`);
+
+// Create our lockfile
+await lockFile(moduleIdent);
+
+// Setup our IPC "connection"
+const ipc = await setupIpc(moduleIdent);
+
+// Setup our termination handlers for SIGTERM and SIGINT
+setupTerminationSignalHandlers(moduleIdent, ipc);
+
+// Set initial ping reply
+setPingReply(moduleIdent, ipc, 'init');
+
+//
+// End boilerplate
+
+// Config
+
+//
+// End config
+
+//
+// Event listeners
+
+ipc.on('start', () => {
+  setPingReply(moduleIdent, ipc, 'running');
+});
 
 // Determine game type
 

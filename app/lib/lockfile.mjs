@@ -1,32 +1,38 @@
 'use strict';
 
 // Our libs
-import { timestamp } from './timestamp.mjs';
+import { setupLog } from './log.mjs';
 
 // Nodejs stdlib
 import { default as fs } from 'node:fs';
 import { default as path } from 'node:path';
-import { default as crypto } from 'node:crypto';
 
 // External libs
 import { default as lock } from 'lockfile';
 
+const log = setupLog('lib/lockfile.mjs');
+
 const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gameserver-mgr';
 
-// Attempt to create a lockfile
-export function lockFile(ident = '') {
+/**
+ * Attempt to create a lockfile
+ * @param {String} lock - the lockfile to create
+ * @returns {Promise<string>} resolves when locked, rejects on error
+ */
+export function lockFile(lockId = '') {
+  log.debug(`Attempting to acquire lock for ${lockId}`);
   return new Promise((resolve, reject) => {
     // Ensure our dirs exist
     checkLockPath();
 
     // Normalize the path
-    const lockPath = path.resolve(path.normalize(`${mgrTmpDir}/lock/${ident}.lock`));
+    const lockPath = path.resolve(path.normalize(`${mgrTmpDir}/lock/${lockId}.lock`));
 
     // Attempt to lock
-    lock.lock(lockPath, (err) => {
-      if (err) {
-        console.log(`[${timestamp()}] Unable to acquire lock at ${lockPath} (Process already running?)`, err);
-        return reject(new Error(`Unable to acquire lock at ${lockPath} (Process already running?)`, err));
+    lock.lock(lockPath, (error) => {
+      if (error) {
+        log.debug(error);
+        return reject(new Error(`Unable to acquire lock at ${lockPath}`, error));
       } else {
         return resolve(lockPath);
       }
@@ -34,24 +40,27 @@ export function lockFile(ident = '') {
   });
 }
 
-// Attempt to remove a lockfile
-export function unlockFile(ident = '') {
+/**
+ * Attempt to remove a lockfile
+ * @param {String} moduleIdent the module's moduleIdent
+ * @returns {Promise<string>} resolves when unlocked, rejects on error
+ */
+export function unlockFile(moduleIdent = '') {
   return new Promise((resolve, reject) => {
     // Ensure our dirs exist
     try {
       checkLockPath();
-    } catch (err) {
-      return reject(err);
+    } catch (error) {
+      return reject(error);
     }
 
     // Normalize the path
-    const lockPath = path.resolve(path.normalize(`${mgrTmpDir}/lock/${ident}.lock`));
+    const lockPath = path.resolve(path.normalize(`${mgrTmpDir}/lock/${moduleIdent}.lock`));
 
     // Attempt to unlock
-    lock.unlock(lockPath, (err) => {
-      if (err) {
-        console.log(`[${timestamp()}] Unable to unlock ${lockPath}`, err);
-        return reject(new Error(`Unable to unlock ${lockPath}`, err));
+    lock.unlock(lockPath, (error) => {
+      if (error) {
+        return reject(error);
       } else {
         return resolve(lockPath);
       }
@@ -59,7 +68,10 @@ export function unlockFile(ident = '') {
   });
 }
 
-// Ensure that /tmp/gameserver-mgr/ipc exists
+/**
+ * Ensure that /tmp/gameserver-mgr/lock exists
+ * @returns {void}
+ */
 function checkLockPath() {
   try {
     // eslint-disable-next-line security/detect-non-literal-fs-filename
@@ -67,9 +79,8 @@ function checkLockPath() {
       // eslint-disable-next-line security/detect-non-literal-fs-filename
       fs.mkdirSync(`${mgrTmpDir}/lock`, { recursive: true });
     }
-  } catch (err) {
-    if (err) {
-      console.log(`[${timestamp()}] Could not create lockfile directory at ${mgrTmpDir}`, err);
+  } catch (error) {
+    if (error) {
       throw new Error(`Could not create lockfile directory at ${mgrTmpDir}`);
     }
   }

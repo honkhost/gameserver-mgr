@@ -1,5 +1,10 @@
 'use strict';
 
+/**
+ * Parse a boolean value from a string.
+ * @param {String} string - the string to parse
+ * @returns {Boolean} the parsed truthness value of the input string
+ */
 export function parseBool(string) {
   if (string) {
     switch (string.toLowerCase().trim()) {
