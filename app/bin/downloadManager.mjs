@@ -6,15 +6,18 @@ import { lockFile, unlockFile } from '../lib/lockfile.mjs';
 import { setupTerminationSignalHandlers } from '../lib/exitHandlers.mjs';
 import { setupLog, isoTimestamp } from '../lib/log.mjs';
 import { steamCmdDownloadSelf, steamCmdDownloadAppid } from '../lib/steamcmd.mjs';
-import { loadManifest } from '../lib/downloadManager.mjs';
+import { getDirName } from '../lib/dirname.mjs';
 
 // Nodejs stdlib
 import { default as Stream } from 'node:stream';
+import { default as path } from 'node:path';
 
 const moduleIdent = 'downloadManager';
 
 //
 // Start boilerplate
+
+const __dirname = getDirName();
 
 // Setup logger
 const log = setupLog('bin/downloadManager.mjs');
@@ -153,4 +156,17 @@ async function sendRequestReply(channel, message, request) {
   }
 
   ipc.publish(`${request.replyTo}.${channel}`, JSON.stringify(statusMsg));
+}
+
+/**
+ * Load gameInfo manifest
+ * @param {String} gameId - the gameId to load
+ * @returns {Object} the gameInfo manifest
+ */
+async function loadManifest(gameId) {
+  // Game info manifest (download type, etc)
+  // eslint-disable-next-line node/no-unsupported-features/es-syntax
+  const _manifest = await import(path.normalize(path.resolve(`${__dirname}/../manifests/${gameId}.mjs`)));
+  const manifest = _manifest.manifest;
+  return manifest;
 }
