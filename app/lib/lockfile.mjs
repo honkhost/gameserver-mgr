@@ -1,16 +1,11 @@
 'use strict';
 
-// Our libs
-import { setupLog } from './log.mjs';
-
 // Nodejs stdlib
 import { default as fs } from 'node:fs';
 import { default as path } from 'node:path';
 
 // External libs
 import { default as lock } from 'lockfile';
-
-const log = setupLog('lib/lockfile.mjs');
 
 const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gameserver-mgr';
 
@@ -20,7 +15,6 @@ const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gameserver-mgr';
  * @returns {Promise<string>} resolves when locked, rejects on error
  */
 export function lockFile(lockId = '') {
-  log.debug(`Attempting to acquire lock for ${lockId}`);
   return new Promise((resolve, reject) => {
     // Ensure our dirs exist
     checkLockPath();
@@ -31,8 +25,7 @@ export function lockFile(lockId = '') {
     // Attempt to lock
     lock.lock(lockPath, (error) => {
       if (error) {
-        log.debug(error);
-        return reject(new Error(`Unable to acquire lock at ${lockPath}`, error));
+        return reject(error);
       } else {
         return resolve(lockPath);
       }
@@ -60,7 +53,7 @@ export function unlockFile(moduleIdent = '') {
     // Attempt to unlock
     lock.unlock(lockPath, (error) => {
       if (error) {
-        return reject(error);
+        return reject(new Error(`Unable to release lock at ${lockPath}`, error));
       } else {
         return resolve(lockPath);
       }

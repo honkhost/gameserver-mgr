@@ -18,8 +18,11 @@ import { default as prefix } from 'loglevel-plugin-prefix';
  * @returns {loglevel.getLogger} the logging interface
  */
 export function setupLog(module = 'unknown') {
+  // Log everything
+  // TODO: dynamic? load from envvar?
   loglevel.setLevel('trace', false);
 
+  // Map loglevel to colors
   const colors = {
     TRACE: chalk.magenta.bold,
     DEBUG: chalk.cyan.bold,
@@ -28,7 +31,9 @@ export function setupLog(module = 'unknown') {
     ERROR: chalk.red.bold,
   };
 
+  // Register our prefix
   prefix.reg(loglevel);
+  // Setup the prefix
   prefix.apply(loglevel, {
     format(level, name, timestamp) {
       var string = '';
@@ -39,27 +44,9 @@ export function setupLog(module = 'unknown') {
     },
   });
 
-  const _log = loglevel.getLogger(module);
-
-  const log = {
-    trace: () => {
-      _log.trace(arguments);
-    },
-    debug: () => {
-      _log.debug(arguments);
-    },
-    info: () => {
-      _log.info(arguments);
-    },
-    warn: () => {
-      _log.warn(arguments);
-    },
-    error: () => {
-      _log.error(arguments);
-    },
-  };
-
-  return _log;
+  // Return the logger for our module
+  const log = loglevel.getLogger(module);
+  return log;
 }
 
 /**

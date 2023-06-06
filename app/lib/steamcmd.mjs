@@ -35,7 +35,7 @@ process.on('SIGINT', () => {
 
 /**
  * Download an application from Steam
- * @param {Object.<Number, Boolean, Boolean, Boolean, String, String, String, String>} options
+ * @param {Object.<Number, Boolean, String>} options
  * @param {Number} options.appid - the steam appid to download
  * @param {Boolean} options.serverFilesForce - if true, remove all old server files (DANGEROUS)
  * @param {Boolean} options.validate - validate the install after download
@@ -44,7 +44,8 @@ process.on('SIGINT', () => {
  * @param {String} options.password - login password
  * @param {String} options.steamCmdDir - path to steamcmd install directory
  * @param {String} options.serverFilesDir - path to server files base directory
- * @param {Stream.Passthrough} outputSink - output sink for progress messages
+ * @param {Stream.Passthrough} outputSink - output sink for verbose messages
+ * @param {Stream.Passthrough} progressSink - output sink for progress messages
  * @returns {Promise<Number>} resolves when download is complete, rejects on error
  */
 export function steamCmdDownloadAppid(
@@ -59,6 +60,7 @@ export function steamCmdDownloadAppid(
     serverFilesDir: '',
   },
   outputSink = Stream.PassThrough,
+  progressSink = Stream.PassThrough,
 ) {
   return new Promise((resolve, reject) => {
     // steam appid to download/update
@@ -118,12 +120,16 @@ export function steamCmdDownloadAppid(
     // Create serverFilesDir if necessary
     fs.access(serverFilesDir, fs.constants.F_OK | fs.constants.W_OKAY, (error) => {
       if (error && error.code === 'ENOENT') {
-        log.info(`Creating steamcmd directory at ${serverFilesDir}`);
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
-        fs.mkdirSync(serverFilesDir, {
-          recursive: true,
-          mode: 0o755,
-        });
+        log.info(`Creating server files directory at ${serverFilesDir}`);
+        try {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename
+          fs.mkdirSync(serverFilesDir, {
+            recursive: true,
+            mode: 0o755,
+          });
+        } catch (error2) {
+          return reject(error2);
+        }
       } else {
         return reject(error);
       }
@@ -149,7 +155,8 @@ export function steamCmdDownloadAppid(
     // Quit at the end
     steamcmdCommandLine.push('+quit');
 
-    log.info(`Spawning SteamCMD to download/update appid ${appid} in ${serverFilesDir}`, 'info', 'steamcmd');
+    // Log that we're about to run steamcmd
+    log.info(`Spawning SteamCMD to download/update appid ${appid} in ${serverFilesDir}`);
 
     // Now actually run steamcmd
     runSteamCmd(
@@ -158,11 +165,14 @@ export function steamCmdDownloadAppid(
         steamCmdDir: steamCmdDir,
       },
       outputSink,
+      progressSink,
     )
-      .then(() => {
-        return resolve(0);
+      .then((result) => {
+        // Bubble up the exit code
+        return resolve(result);
       })
       .catch((error) => {
+        // Bubble up errors too
         return reject(error);
       });
   });
@@ -173,7 +183,6 @@ export function steamCmdDownloadAppid(
  * @param {Object.<Boolean, String>} options
  * @param {Boolean} options.force - remove existing steamcmd files before downloading
  * @param {String} options.steamCmdDir - path to steamcmd install directory
- * @param {Stream.Passthrough} outputSink - output sink for progress messages
  * @returns {Promise<Number>} resolves when download is complete, rejects on error
  */
 export function steamCmdDownloadSelf(
@@ -181,9 +190,9 @@ export function steamCmdDownloadSelf(
     force: false,
     steamCmdDir: '',
   },
-  outputSink = Stream.PassThrough,
 ) {
   return new Promise((resolve, reject) => {
+    // Verify steamCmdDir was provided, reject if it wasn't
     // eslint-disable-next-line no-prototype-builtins
     var steamCmdDir = options.hasOwnProperty('steamCmdDir') ? options.steamCmdDir : '';
     if (steamCmdDir === '') {
@@ -201,55 +210,41 @@ export function steamCmdDownloadSelf(
     fs.access(steamCmdDir, fs.constants.F_OK | fs.constants.W_OKAY, (error) => {
       if (error && error.code === 'ENOENT') {
         log.info(`Creating steamcmd directory at ${steamCmdDir}`);
-        // eslint-disable-next-line security/detect-non-literal-fs-filename
-        fs.mkdirSync(steamCmdDir, {
-          recursive: true,
-          mode: 0o755,
-        });
+        try {
+          // eslint-disable-next-line security/detect-non-literal-fs-filename
+          fs.mkdirSync(path.normalize(path.resolve(`${steamCmdDir}`)), {
+            recursive: true,
+            mode: 0o755,
+          });
+        } catch (error) {
+          return reject(error);
+        }
       }
     });
 
-    // Check to see if steamcmd.sh exists
+    // Check to see if steamcmd exists and we can execute it
     fs.access(
       path.normalize(path.resolve(`${steamCmdDir}/linux32/steamcmd`)),
       fs.constants.F_OK | fs.constants.X_OKAY,
       async (error) => {
         // if we get an ENOENT error then the file doesn't exist
-        if (error && error.code === 'ENOENT') {
+        if (error) {
           log.info(`Downloading Initial SteamCMD Binary`);
           // Download the tar.gz from Valve and unpack it
           try {
-            // eslint-disable-next-line promise/no-promise-in-callback
+            fs.rmSync(path.normalize(path.resolve(`${steamCmdDir}`)), { recursive: true, force: true });
+            // eslint-disable-next-line security/detect-non-literal-fs-filename
+            fs.mkdirSync(path.normalize(path.resolve(`${steamCmdDir}`)), {
+              recursive: true,
+              mode: 0o755,
+            });
             await downloadFile(steamcmdUrl, steamCmdDir, { untar: true });
+            return resolve();
           } catch (error) {
+            // Bubble up any errors
             return reject(error);
           }
         }
-        // Either steamcmd is already setup or we just downloaded it
-        // Either way, run steamcmd.sh +quit to ensure its updated
-        log.info(`Running SteamCMD to update self`);
-        // eslint-disable-next-line promise/no-promise-in-callback
-        // Setup steamcmd command line / inline script
-        const steamcmdCommandLine = [];
-
-        // All we need to do here is +quit
-        steamcmdCommandLine.push('+quit');
-
-        // Now actually run steamcmd
-        // eslint-disable-next-line promise/no-promise-in-callback
-        runSteamCmd(
-          {
-            script: steamcmdCommandLine,
-            steamCmdDir: steamCmdDir,
-          },
-          outputSink,
-        )
-          .then(() => {
-            return resolve(0);
-          })
-          .catch((error) => {
-            return reject(error);
-          });
       },
     );
   });
@@ -260,7 +255,8 @@ export function steamCmdDownloadSelf(
  * @param {Object.<String, String>} options
  * @param {String[]} options.script - steamcmd script to run
  * @param {String} options.steamCmdDir - steamcmd install directory
- * @param {Stream.Passthrough} outputSink - output sink for progress messages
+ * @param {Stream.Passthrough} outputSink - output sink for verbose messages
+ * @param {Stream.Passthrough} progressSink - output sink for progress messages
  * @returns {Promise<Number>} resolves with steamcmd exit code when script is complete, rejects on error
  */
 export function runSteamCmd(
@@ -269,9 +265,10 @@ export function runSteamCmd(
     steamCmdDir: '',
   },
   outputSink = Stream.PassThrough,
+  progressSink = Stream.PassThrough,
 ) {
   return new Promise((resolve, reject) => {
-    // Ensure steamCmdDir is provided
+    // Ensure steamCmdDir is provided, reject if it isn't
     // eslint-disable-next-line no-prototype-builtins
     var steamCmdDir = options.hasOwnProperty('steamCmdDir') ? options.steamCmdDir : '';
     if (steamCmdDir === '') {
@@ -279,7 +276,7 @@ export function runSteamCmd(
       return reject(new Error('steamCmdDir required'));
     }
 
-    // steamcmd script to run
+    // Steamcmd script to run
     // eslint-disable-next-line no-prototype-builtins, prettier/prettier
     var script = options.hasOwnProperty('script') ? options.script : ['+quit'];
 
@@ -293,7 +290,9 @@ export function runSteamCmd(
 
     // Remove username/password from log output
     const logDisplayCmdline = structuredClone(steamcmdCommandLine);
+    // Run across the array
     for (var i = 0; i < logDisplayCmdline.length; i++) {
+      // If it's the +login statement but isn't anon, redact the username/password
       // eslint-disable-next-line security/detect-object-injection
       if (logDisplayCmdline[i].includes('+login') && logDisplayCmdline[i] != '+login anonymous') {
         // eslint-disable-next-line security/detect-object-injection
@@ -301,40 +300,114 @@ export function runSteamCmd(
       }
     }
 
+    // Convert ["+login anonymous"] into ["+login", "anonymous"] and etc
     const steamcmdCommandLineNormalized = steamcmdCommandLine.join(' ').split(' ');
 
+    // Log our sanitized steamcmd script
     log.debug(`Steamcmd script (runSteamCmd):`, logDisplayCmdline);
-    log.debug(`Normalized steamcmd script (runSteamCmd):`, steamcmdCommandLineNormalized);
 
-    // Spawn steamcmd in a pty
-    const steamcmdChild = pty.spawn(
-      path.normalize(path.resolve(`${options.steamCmdDir}/linux32/steamcmd`)),
-      steamcmdCommandLineNormalized,
-      {
-        handleFlowControl: true,
-        name: 'xterm-color',
-        cols: 80,
-        rows: 30,
-        cwd: options.steamCmdDir,
-        env: steamcmdEnv,
-      },
-    );
+    var steamcmdChild = null;
+    try {
+      // Spawn steamcmd in a pty
+      steamcmdChild = pty.spawn(
+        path.normalize(path.resolve(`${options.steamCmdDir}/linux32/steamcmd`)),
+        steamcmdCommandLineNormalized,
+        {
+          handleFlowControl: true,
+          name: 'xterm-color',
+          cols: 80,
+          rows: 30,
+          cwd: options.steamCmdDir,
+          env: steamcmdEnv,
+        },
+      );
+    } catch (error) {
+      log.error('error spawning steamcmd:', error);
+      return reject(error);
+    }
 
     // Setup some event listeners
 
     // When steamcmd outputs, output it to console
     // Yes we have to do that grossness where we split on '\r\n'
     // Valve doesn't know how to stdout
-    // TODO: make this a transform stream
+    // TODO: make this a transform stream (lol you wish)
     steamcmdChild.onData((rawData) => {
+      // First make sure it's a string (you never know...)
       rawData = rawData.toString();
+      // Split it on newlines (thanks valve)
       var dataArray = rawData.split('\r\n');
+      // Run across the array we just created
       for (let i = 0; i < dataArray.length; i++) {
         // eslint-disable-next-line security/detect-object-injection
-        var data = dataArray[i];
-        if (data != '') {
-          log.debug(data);
-          outputSink.push(data);
+        const line = dataArray[i];
+        // If that element isn't empty string (empty line)
+        if (line != '') {
+          // Log it
+          log.debug(line);
+          // And push to outputSink
+          outputSink.push(line);
+
+          //
+          // Parse it for progress indications
+          //
+          // Downloading steamcmd
+          const steamCmdDownloadStateRegex = /^\[\s{0,2}([0-9]+)%\] ([A-Za-z]+).*\(([0-9]+) of ([0-9]+).*$/;
+          if (steamCmdDownloadStateRegex.test(line)) {
+            // Build the progress object to send out
+            const progressSnapshot = {
+              downloadStage: 'steamcmd_download',
+              downloadStateHex: '0x00',
+              downloadState: null,
+              downloadProgress: null,
+              downloadProgressReceived: null,
+              downloadProgressTotal: null,
+              line: line,
+            };
+
+            // Run the regex
+            const steamCmdDownloadStateMatch = line.match(steamCmdDownloadStateRegex);
+
+            // Pull the matches out
+            progressSnapshot.downloadState = steamCmdDownloadStateMatch[2].toLowerCase();
+            progressSnapshot.downloadProgress = steamCmdDownloadStateMatch[1].trim();
+            progressSnapshot.downloadProgressReceived = steamCmdDownloadStateMatch[3];
+            progressSnapshot.downloadProgressTotal = steamCmdDownloadStateMatch[4];
+
+            // Send out the object
+            progressSink.push(JSON.stringify(progressSnapshot));
+          }
+
+          //
+          // Downloading an appid
+          // Update state (0x61) downloading, progress: NN.NN
+          const appidDownloadStateRegex =
+            /^(?: Update state )\(([0-9]x[0-9]+)\) ([A-Za-z ]*).*([0-9]+\.[0-9]+) \(([0-9]+)(?: \/ )([0-9]+)\)$/;
+          if (appidDownloadStateRegex.test(line)) {
+            // Build the progress object to send out
+            const progressSnapshot = {
+              downloadStage: 'appid_download',
+              downloadStateHex: null,
+              downloadState: null,
+              downloadProgress: null,
+              downloadProgressReceived: null,
+              downloadProgressTotal: null,
+              line: line,
+            };
+
+            // Run the regex
+            const downloadStateMatch = line.match(appidDownloadStateRegex);
+
+            // Pull matches out
+            progressSnapshot.downloadStateHex = downloadStateMatch[1];
+            progressSnapshot.downloadState = downloadStateMatch[2];
+            progressSnapshot.downloadProgress = downloadStateMatch[3];
+            progressSnapshot.downloadProgressReceived = downloadStateMatch[4];
+            progressSnapshot.downloadProgressTotal = downloadStateMatch[5];
+
+            // Send the object
+            progressSink.push(JSON.stringify(progressSnapshot));
+          }
         }
       }
     });
@@ -347,28 +420,35 @@ export function runSteamCmd(
       log.info(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
 
       // if exit code is 42, we need to re-launch steamcmd
-      if (code.exitCode === 42) {
+      if (code.exitCode === 42 || code.signal === 7) {
         // Spawn steamcmd again, saving the exit code to retryExitCode
-        log.info('Steamcmd exited with code 42, re-launching...');
+        log.info(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
         outputSink.push('Steamcmd exited with code 42, re-launching...');
+        // Holder for our retry exitcode
         var retryExitCode = null;
         try {
-          retryExitCode = await runSteamCmd(options, outputSink);
+          // Run steamcmd again
+          retryExitCode = await runSteamCmd(options, outputSink, progressSink);
         } catch (error) {
-          log.error(error);
+          // Log and reject errors
           return reject(error);
         }
-
         // Resolve it regardless, caller will make sure we re-run if it's 42 again
         return resolve(retryExitCode);
       } else if (code.exitCode === 0) {
-        return resolve(code.exitCode);
+        // If exit code is 0, we're done
+        return resolve(code);
       } else {
-        return reject(new Error(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`));
+        // Otherwise reject any unknown exit codes
+        // TODO: come back and implement retries for known exit codes
+        log.debug(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
+        return reject(code);
       }
     });
 
+    // Cleanup exitSignal emitter
     steamCmdChildSignalForwarder.removeAllListeners();
+    // And add a listener to handle sigterm/sigint
     steamCmdChildSignalForwarder.once('exitSignal', () => {
       process.stdout.write('\n');
       log.info('Caught SIGTERM/SIGINT while running steamcmd, sending SIGTERM...');

@@ -71,7 +71,7 @@ function checkIpcPath() {
  * @returns {void}
  */
 export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '') {
-  log.debug(`Setting ping reply for ${moduleIdent} to "${status}"`);
+  if (process.env.DEBUG) log.debug(`Setting ping reply for ${moduleIdent} to "${status}"`);
 
   // Clear old subscriptions
   ipc.unsubscribe(`${moduleIdent}.ping`);
@@ -87,12 +87,10 @@ export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '
       moduleIdent: moduleIdent,
       timestamp: Date.now(),
       msg: 'pong',
-      status: {
-        pid: process.pid,
-        status: status,
-        uptime: process.uptime(),
-        resourceUsage: process.resourceUsage(),
-      },
+      pid: process.pid,
+      status: status,
+      uptime: process.uptime(),
+      resourceUsage: process.resourceUsage(),
     };
 
     // Send it out
@@ -100,7 +98,7 @@ export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '
   });
 
   // Subscribe to broadcast ping requests
-  ipc.subscribe(`_broadcast.ping`, (data) => {
+  ipc.subscribe('_broadcast.ping', (data) => {
     const pingRequest = JSON.parse(data);
 
     // Build the reply
@@ -109,15 +107,13 @@ export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '
       moduleIdent: moduleIdent,
       timestamp: Date.now(),
       msg: 'pong',
-      status: {
-        pid: process.pid,
-        status: status,
-        uptime: process.uptime(),
-        resourceUsage: process.resourceUsage(),
-      },
+      pid: process.pid,
+      status: status,
+      uptime: process.uptime(),
+      resourceUsage: process.resourceUsage(),
     };
 
     // Send it out
-    ipc.publish(pingRequest.replyTo, JSON.stringify(pingReply));
+    ipc.publish('_broadcast.pong', JSON.stringify(pingReply));
   });
 }

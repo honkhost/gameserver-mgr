@@ -19,7 +19,7 @@ const moduleIdent = 'cli';
 // Start boilerplate
 
 // Setup logger
-const log = setupLog('bin/downloadManager.mjs');
+const log = setupLog('bin/cli.mjs');
 
 log.info('honk.host gameserver manager v0.4.20');
 log.info(`--- Logs begin at ${isoTimestamp()} ---`);
@@ -192,14 +192,26 @@ function downloadGame(argv) {
           exit(moduleIdent, ipc, 0);
         }
       });
+      ipc.subscribe(`${moduleIdent}.${nack.message}.error`, (error) => {
+        error = JSON.parse(error.toString());
+        log.error(`Error while downloading ${request.gameId}: ${error.message}`);
+        if (error.message == 'SHUTDOWN') {
+          exit(moduleIdent, ipc, 1);
+        }
+      });
     } else {
+      // If we don't get the channel, exit
+      log.warn('Received NACK but no in-progress channel, exiting');
       exit(moduleIdent, ipc, 1);
     }
   });
 
   ipc.subscribe(`${moduleIdent}.${request.requestId}.error`, (error) => {
     error = JSON.parse(error.toString());
-    log.error(`Error while downloading ${request.gameId}: ${JSON.stringify(error, null, 2)}`);
+    log.error(`Error while downloading ${request.gameId}: ${error.message}`);
+    if (error.message == 'SHUTDOWN') {
+      exit(moduleIdent, ipc, 1);
+    }
   });
 
   ipc.subscribe(`${moduleIdent}.${request.requestId}.progress`, (progress) => {
