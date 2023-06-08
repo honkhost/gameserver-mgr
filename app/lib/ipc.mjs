@@ -20,7 +20,6 @@ const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gameserver-mgr';
  * @returns {Promise<qfsq.QlobberFSQ>} the IPC object for further use
  */
 export function setupIpc(moduleIdent = '') {
-  log.debug(`Setting up IPC object for ${moduleIdent}`);
   return new Promise((resolve, reject) => {
     // First make sure the directory exists
     try {
@@ -71,7 +70,9 @@ function checkIpcPath() {
  * @returns {void}
  */
 export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '') {
-  if (process.env.DEBUG) log.debug(`Setting ping reply for ${moduleIdent} to "${status}"`);
+  if (process.env.IPC_DEBUG) {
+    log.debug(`Setting ping reply for ${moduleIdent} to "${JSON.stringify(status, null, 2)}"`);
+  }
 
   // Clear old subscriptions
   ipc.unsubscribe(`${moduleIdent}.ping`);

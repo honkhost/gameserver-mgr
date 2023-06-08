@@ -21,9 +21,6 @@ const moduleIdent = 'cli';
 // Setup logger
 const log = setupLog('bin/cli.mjs');
 
-log.info('honk.host gameserver manager v0.4.20');
-log.info(`--- Logs begin at ${isoTimestamp()} ---`);
-
 // Create our lockfile
 await lockFile(moduleIdent);
 
@@ -93,6 +90,30 @@ ipc.on('start', () => {
         downloadGame(argv);
       },
     )
+    .command(
+      'listDownloads',
+      'List running downloads',
+      (yargs) => {
+        return yargs;
+      },
+      (argv) => {
+        listDownloads(argv);
+      },
+    )
+    .command(
+      'cancelDownload <game>',
+      'Cancel a game download',
+      (yargs) => {
+        return yargs.positional('game', {
+          type: 'string',
+          describe: 'Game download to cancel',
+          demand: true,
+        });
+      },
+      (argv) => {
+        cancelDownload(argv);
+      },
+    )
     .demandCommand(1)
     .strict()
     .parse();
@@ -123,13 +144,13 @@ function restartModule(argv) {
  * @param {Object} argv - argv as parsed by `yargs.parse(process.argv)`
  */
 function sendMessage(argv) {
-  const msgId = crypto.randomUUID();
+  const requestId = crypto.randomUUID();
   const targetChannel = argv.channel;
   const msg = {
-    msgId: msgId,
+    requestId: requestId,
     timestamp: Date.now(),
     message: argv.message,
-    replyTo: `${moduleIdent}.${msgId}`,
+    replyTo: `${moduleIdent}.${requestId}`,
   };
 
   // Send out the message
@@ -140,7 +161,7 @@ function sendMessage(argv) {
   log.debug('Waiting for replies');
   setTimeout(() => {
     exit(moduleIdent, ipc);
-  }, 1000);
+  }, 10000);
 
   ipc.subscribe(msg.replyTo, (data) => {
     log.debug('Message reply:', JSON.stringify(JSON.parse(data.toString()), null, 2));
@@ -226,6 +247,75 @@ function downloadGame(argv) {
       exit(moduleIdent, ipc, 0);
     }
   });
+}
+
+/**
+ * Cancel a game download
+ */
+function cancelDownload(argv) {
+  // First we need to list running downloads
+  const downloadListRequestRequestId = crypto.randomUUID();
+  const downloadListRequest = {
+    requestId: downloadListRequestRequestId,
+    replyTo: `${moduleIdent}.${downloadListRequestRequestId}`,
+    timestamp: Date.now(),
+  };
+
+  ipc.subscribe(downloadListRequest.replyTo, (reply) => {
+    reply = JSON.parse(reply);
+    const list = reply.message;
+
+    Object.keys(list).forEach((key) => {
+      // eslint-disable-next-line security/detect-object-injection
+      const listItem = list[key];
+      log.debug(listItem);
+
+      if (key === argv.game) {
+        const requestIdToCancel = listItem.request.requestId;
+
+        const downloadCancelRequestRequestId = crypto.randomUUID();
+        const downloadCancelRequest = {
+          requestId: downloadCancelRequestRequestId,
+          replyTo: `${moduleIdent}.${downloadCancelRequestRequestId}`,
+          timestamp: Date.now(),
+          message: {
+            command: 'cancel',
+          },
+        };
+        ipc.subscribe(`${downloadCancelRequest.replyTo}.status`, (reply) => {
+          reply = JSON.parse(reply);
+          if (reply.message === 'canceled') {
+            log.info(`Download request for ${argv.game} canceled`);
+            exit(moduleIdent, ipc, 0);
+          }
+        });
+
+        log.debug(`sending req to ${reply.moduleIdent}.${requestIdToCancel}.cancelDownload`);
+        ipc.publish(`${reply.moduleIdent}.${requestIdToCancel}.cancelDownload`, JSON.stringify(downloadCancelRequest));
+      }
+    });
+  });
+  ipc.publish('downloadManager.listRunningDownloads', JSON.stringify(downloadListRequest));
+}
+
+/**
+ * Ask downloadmanager for a list of running downloads
+ */
+function listDownloads(argv) {
+  const requestId = crypto.randomUUID();
+  const request = {
+    requestId: requestId,
+    replyTo: `${moduleIdent}.${requestId}`,
+    timestamp: Date.now(),
+  };
+
+  ipc.subscribe(request.replyTo, (list) => {
+    list = JSON.parse(list);
+    log.info(JSON.stringify(list, null, 2));
+    exit(moduleIdent, ipc, 0);
+  });
+
+  ipc.publish('downloadManager.listRunningDownloads', JSON.stringify(request));
 }
 
 function systemStatus(argv) {

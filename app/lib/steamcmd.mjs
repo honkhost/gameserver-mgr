@@ -46,6 +46,7 @@ process.on('SIGINT', () => {
  * @param {String} options.serverFilesDir - path to server files base directory
  * @param {Stream.Passthrough} outputSink - output sink for verbose messages
  * @param {Stream.Passthrough} progressSink - output sink for progress messages
+ * @param {Stream.PassThrough} commandSink - input sink for commands (currently only supports "cancel")
  * @returns {Promise<Number>} resolves when download is complete, rejects on error
  */
 export function steamCmdDownloadAppid(
@@ -61,6 +62,7 @@ export function steamCmdDownloadAppid(
   },
   outputSink = Stream.PassThrough,
   progressSink = Stream.PassThrough,
+  commandSink = Stream.PassThrough,
 ) {
   return new Promise((resolve, reject) => {
     // steam appid to download/update
@@ -113,7 +115,9 @@ export function steamCmdDownloadAppid(
 
     // Clean up old game files if specified
     if (serverFilesForce) {
-      log.debug(`steamCmdDownloadAppid options.serverFilesForce is true, removing old server installation`);
+      if (process.env.DEBUG) {
+        log.debug(`steamCmdDownloadAppid options.serverFilesForce is true, removing old server installation`);
+      }
       fs.rmSync(path.normalize(path.resolve(`${serverFilesDir}`)), { recursive: true, force: true });
     }
 
@@ -123,17 +127,20 @@ export function steamCmdDownloadAppid(
         log.info(`Creating server files directory at ${serverFilesDir}`);
         try {
           // eslint-disable-next-line security/detect-non-literal-fs-filename
-          fs.mkdirSync(serverFilesDir, {
+          fs.mkdirSync(path.normalize(path.resolve(`${serverFilesDir}`)), {
             recursive: true,
             mode: 0o755,
           });
         } catch (error2) {
+          log.error(error2);
           return reject(error2);
         }
       } else {
+        log.error(error);
         return reject(error);
       }
     });
+    log.debug('here');
 
     // Setup steamcmd command line / inline script
     const steamcmdCommandLine = [];
@@ -166,6 +173,7 @@ export function steamCmdDownloadAppid(
       },
       outputSink,
       progressSink,
+      commandSink,
     )
       .then((result) => {
         // Bubble up the exit code
@@ -173,6 +181,7 @@ export function steamCmdDownloadAppid(
       })
       .catch((error) => {
         // Bubble up errors too
+        log.error(error);
         return reject(error);
       });
   });
@@ -202,7 +211,9 @@ export function steamCmdDownloadSelf(
 
     // If force is set, remove all steamcmd files
     if (options.force) {
-      log.debug(`steamCmdDownloadSelf options.force is true, removing old steamcmd installation`);
+      if (process.env.DEBUG) {
+        log.debug(`steamCmdDownloadSelf options.force is true, removing old steamcmd installation`);
+      }
       fs.rmSync(path.normalize(path.resolve(`${steamCmdDir}`)), { recursive: true, force: true });
     }
 
@@ -228,7 +239,7 @@ export function steamCmdDownloadSelf(
       fs.constants.F_OK | fs.constants.X_OKAY,
       async (error) => {
         // if we get an ENOENT error then the file doesn't exist
-        if (error) {
+        if (error && error.code === 'ENOENT') {
           log.info(`Downloading Initial SteamCMD Binary`);
           // Download the tar.gz from Valve and unpack it
           try {
@@ -257,6 +268,7 @@ export function steamCmdDownloadSelf(
  * @param {String} options.steamCmdDir - steamcmd install directory
  * @param {Stream.Passthrough} outputSink - output sink for verbose messages
  * @param {Stream.Passthrough} progressSink - output sink for progress messages
+ * @param {Stream.PassThrough} commandSink - input sink for commands (currently only supports "cancel")
  * @returns {Promise<Number>} resolves with steamcmd exit code when script is complete, rejects on error
  */
 export function runSteamCmd(
@@ -264,8 +276,9 @@ export function runSteamCmd(
     script: [''],
     steamCmdDir: '',
   },
-  outputSink = Stream.PassThrough,
-  progressSink = Stream.PassThrough,
+  outputSink = Stream.PassThrough, // raw output
+  progressSink = Stream.PassThrough, // parsed progress messages
+  commandSink = Stream.PassThrough, // to kill steamcmd if needed
 ) {
   return new Promise((resolve, reject) => {
     // Ensure steamCmdDir is provided, reject if it isn't
@@ -304,9 +317,16 @@ export function runSteamCmd(
     const steamcmdCommandLineNormalized = steamcmdCommandLine.join(' ').split(' ');
 
     // Log our sanitized steamcmd script
-    log.debug(`Steamcmd script (runSteamCmd):`, logDisplayCmdline);
+    if (process.env.DEBUG) {
+      log.debug(`Steamcmd script (runSteamCmd):`, logDisplayCmdline);
+    }
 
+    // Setup the steamcmdChild variable up here
     var steamcmdChild = null;
+
+    // And a "cancel in progress" one
+    var cancelInProgress = false;
+
     try {
       // Spawn steamcmd in a pty
       steamcmdChild = pty.spawn(
@@ -326,7 +346,19 @@ export function runSteamCmd(
       return reject(error);
     }
 
-    // Setup some event listeners
+    // Listen to commandSink for cancel commands
+    commandSink.on('data', (command) => {
+      command = JSON.parse(command);
+      if (command.command === 'cancel') {
+        cancelInProgress = true;
+        steamcmdChild.kill('SIGTERM');
+        steamcmdChild.onExit((exitCode) => {
+          exitCode.reason = 'canceled';
+          commandSink.push(JSON.stringify(exitCode));
+          return resolve(exitCode);
+        });
+      }
+    });
 
     // When steamcmd outputs, output it to console
     // Yes we have to do that grossness where we split on '\r\n'
@@ -343,8 +375,6 @@ export function runSteamCmd(
         const line = dataArray[i];
         // If that element isn't empty string (empty line)
         if (line != '') {
-          // Log it
-          log.debug(line);
           // And push to outputSink
           outputSink.push(line);
 
@@ -362,7 +392,7 @@ export function runSteamCmd(
               downloadProgress: null,
               downloadProgressReceived: null,
               downloadProgressTotal: null,
-              line: line,
+              progressLine: line,
             };
 
             // Run the regex
@@ -392,7 +422,7 @@ export function runSteamCmd(
               downloadProgress: null,
               downloadProgressReceived: null,
               downloadProgressTotal: null,
-              line: line,
+              progressLine: line,
             };
 
             // Run the regex
@@ -417,18 +447,27 @@ export function runSteamCmd(
       // first remove our onData listener from above (and any others that it might have picked up)
       steamcmdChild.removeAllListeners();
       // push a log msg
-      log.info(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
+      if (process.env.DEBUG) {
+        log.debug(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
+      }
 
       // if exit code is 42, we need to re-launch steamcmd
-      if (code.exitCode === 42 || code.signal === 7) {
+      if (cancelInProgress) {
+        log.info('Download canceled on request');
+        outputSink.push('Download canceled on request');
+        code.reason = 'canceled';
+        return resolve(code);
+      } else if (code.exitCode === 42 || code.signal === 7) {
         // Spawn steamcmd again, saving the exit code to retryExitCode
-        log.info(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
-        outputSink.push('Steamcmd exited with code 42, re-launching...');
+        if (process.env.DEBUG) {
+          log.debug(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
+        }
+        outputSink.push(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
         // Holder for our retry exitcode
         var retryExitCode = null;
         try {
           // Run steamcmd again
-          retryExitCode = await runSteamCmd(options, outputSink, progressSink);
+          retryExitCode = await runSteamCmd(options, outputSink, progressSink, commandSink);
         } catch (error) {
           // Log and reject errors
           return reject(error);
@@ -437,11 +476,12 @@ export function runSteamCmd(
         return resolve(retryExitCode);
       } else if (code.exitCode === 0) {
         // If exit code is 0, we're done
+        code.reason = 'completed';
         return resolve(code);
       } else {
         // Otherwise reject any unknown exit codes
         // TODO: come back and implement retries for known exit codes
-        log.debug(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
+        log.warn(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
         return reject(code);
       }
     });

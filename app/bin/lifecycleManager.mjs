@@ -16,13 +16,13 @@ import { default as crypto } from 'node:crypto';
 
 //
 // Start boilerplate
-const moduleIdent = 'instanceCoordinator';
+const moduleIdent = 'lifecycleManager';
 
 // Populate __dirname
 const __dirname = getDirName();
 
 // Setup logger
-const log = setupLog('bin/instanceCoordinator.mjs');
+const log = setupLog('bin/lifecycleManager.mjs');
 
 // Flag start-of-log
 log.info('honk.host gameserver manager v0.4.20');
@@ -80,9 +80,9 @@ process.once('SIGTERM', () => {
 
 //
 // Start logic
-
-// Tell everyone we're alive
+// When the ipc is setup, start doing things
 ipc.on('start', async () => {
+  // Tell everyone we're alive
   setPingReply(moduleIdent, ipc, 'running');
 
   // Fire off broadcast pings to detect module status
@@ -90,7 +90,7 @@ ipc.on('start', async () => {
 
   // Wait for downloadManager to be available
   try {
-    await waitDownloadManagerAvailable(60);
+    await waitDownloadManagerAvailable({ timeout: 30 });
   } catch (error) {
     log.error('Timeout waiting for downloadManager, exiting...');
     exit(moduleIdent, ipc, 2);
@@ -113,8 +113,8 @@ ipc.on('start', async () => {
     await downloadUpdateGame({
       gameId: gameId,
       validate: true,
-      steamCmdForce: false,
-      serverFilesForce: false,
+      steamCmdForce: process.env.STEAMCMD_FILES_FORCE || false,
+      serverFilesForce: process.env.SERVER_FILES_FORCE || false,
       anonymous: true,
       steamCmdDir: steamCmdDir,
       serverFilesDir: serverFilesDir,
@@ -164,25 +164,27 @@ function waitDownloadManagerAvailable(options = { timeout: 30 }) {
   return new Promise((resolve, reject) => {
     var pingCounter = 0;
 
+    const msgId = crypto.randomUUID();
+
     intervals.waitDownloadManagerAvailablePing = setInterval(() => {
       // Increment a counter (timeout waiting for downloadManager)
       pingCounter++;
       // If the counter gets too high, reject with timeout
       if (pingCounter >= options.timeout) {
-        log.error('Timeout exceeded (downloadManager)');
-        return reject(new Error('Timeout exceeded (downloadManager)'));
+        clearInterval(intervals.waitDownloadManagerAvailablePing);
+        return reject(new Error('Timeout exceeded'));
       }
 
       // Send ping
       const pingRequest = {
-        msgId: crypto.randomUUID(),
-        replyTo: 'downloadManager.pingReply.instanceCoordinator',
+        msgId: msgId,
+        replyTo: `${moduleIdent}.${msgId}.pong`,
       };
       ipc.publish('downloadManager.ping', JSON.stringify(pingRequest));
     }, 1000);
 
     // Act on replies
-    ipc.subscribe('downloadManager.pingReply.instanceCoordinator', (data) => {
+    ipc.subscribe(`${moduleIdent}.${msgId}.pong`, (data) => {
       // Parse the reply
       const pingReply = JSON.parse(data);
 
@@ -190,6 +192,7 @@ function waitDownloadManagerAvailable(options = { timeout: 30 }) {
       if (pingReply.uptime >= 5) {
         // Clear our ping interval from above
         clearInterval(intervals.waitDownloadManagerAvailablePing);
+        ipc.unsubscribe(`${msgId}.pong`);
         return resolve();
       }
     });
@@ -242,7 +245,7 @@ function downloadUpdateGame(
 
     ipc.subscribe(`${moduleIdent}.${request.requestId}.status`, (status) => {
       status = JSON.parse(status);
-      log.info(`Download status update for ${request.gameId}: ${status.message}`);
+      log.info(`Download status update for ${request.gameId}: ${JSON.stringify(status.message, null, 2)}`);
       if (status.message === 'completed') {
         // Do something
         ipc.unsubscribe(`${moduleIdent}.${request.requestId}.error`);
@@ -260,7 +263,7 @@ function downloadUpdateGame(
 }
 
 // Subscribe to progress reports
-function watchDownloadProgress(request) {
+function watchDownloadProgress(request, progressSink) {
   ipc.subscribe(`${moduleIdent}.${request.requestId}.ack`, (data) => {
     const ack = JSON.parse(data);
     log.info(`Download manager ACK request for ${request.gameId}:`, ack);
@@ -276,7 +279,7 @@ function watchDownloadProgress(request) {
       log.warn('Download appears to be in process, subscribing to output');
       // subscribe
       request.requestId = newRequestId;
-      watchDownloadProgress(request);
+      watchDownloadProgress(request, progressSink);
     } else {
       // If we don't get the channel, exit
       log.error('Received NACK but no in-progress channel, exiting');
@@ -286,7 +289,7 @@ function watchDownloadProgress(request) {
 
   ipc.subscribe(`${moduleIdent}.${request.requestId}.progress`, (data) => {
     const progress = JSON.parse(data);
-    log.debug(`Progress message:`, progress);
+    // log.debug(`Progress message:`, progress);
   });
 
   ipc.subscribe(`${moduleIdent}.${request.requestId}.output`, (data) => {
@@ -296,7 +299,6 @@ function watchDownloadProgress(request) {
 
   ipc.subscribe(`${moduleIdent}.${request.requestId}.status`, (data) => {
     const status = JSON.parse(data);
-    log.info(`Download status update for ${request.gameId}: ${status.message}`);
     if (status.message === 'completed') {
       // Do something
       ipc.unsubscribe(`${moduleIdent}.${request.requestId}.ack`);
