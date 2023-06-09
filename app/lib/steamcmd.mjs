@@ -2,7 +2,7 @@
 
 // Our libs
 import { downloadFile } from './fileDownload.mjs';
-import { setupLog } from './log.mjs';
+import { setupLog, isoTimestamp } from './log.mjs';
 
 // Nodejs stdlib
 import { default as fs } from 'node:fs';
@@ -375,8 +375,16 @@ export function runSteamCmd(
         const line = dataArray[i];
         // If that element isn't empty string (empty line)
         if (line != '') {
+          if (process.env.DEBUG_STEAMCMD) {
+            log.info(line);
+          }
           // And push to outputSink
-          outputSink.push(line);
+          outputSink.push(
+            JSON.stringify({
+              timestamp: isoTimestamp(),
+              line: line,
+            }),
+          );
 
           //
           // Parse it for progress indications
@@ -454,7 +462,12 @@ export function runSteamCmd(
       // if exit code is 42, we need to re-launch steamcmd
       if (cancelInProgress) {
         log.info('Download canceled on request');
-        outputSink.push('Download canceled on request');
+        outputSink.push(
+          JSON.stringify({
+            timestamp: isoTimestamp(),
+            line: 'Download canceled on request',
+          }),
+        );
         code.reason = 'canceled';
         return resolve(code);
       } else if (code.exitCode === 42 || code.signal === 7) {
@@ -462,7 +475,12 @@ export function runSteamCmd(
         if (process.env.DEBUG) {
           log.debug(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
         }
-        outputSink.push(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
+        outputSink.push(
+          JSON.stringify({
+            timestamp: isoTimestamp(),
+            line: `Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`,
+          }),
+        );
         // Holder for our retry exitcode
         var retryExitCode = null;
         try {

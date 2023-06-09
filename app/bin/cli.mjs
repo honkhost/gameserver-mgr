@@ -84,6 +84,11 @@ ipc.on('start', () => {
             type: 'string',
             description: 'Directory to download server files to',
             demand: false,
+          })
+          .option('steamcmd-directory', {
+            type: 'string',
+            description: 'Directory for steamcmd',
+            demand: false,
           });
       },
       (argv) => {
@@ -191,43 +196,44 @@ function downloadGame(argv) {
   log.info(`Sending request for ${request.gameId} to the download manager`);
   ipc.publish(`downloadManager.downloadUpdateGame`, JSON.stringify(request));
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.ack`, (ack) => {
+  ipc.subscribe(`${request.replyTo}.ack`, (ack) => {
     log.info(`Download manager ACK request for ${request.gameId}: ${ack}`);
   });
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.nack`, (nack) => {
-    nack = JSON.parse(nack.toString());
-    log.warn(`Download manager NACK request for ${request.gameId}: ${JSON.stringify(nack, null, 2)}`);
-
-    // If nack.message is a string, try subscribing to it for process output
-    if (nack.message != '') {
+  ipc.subscribe(`${moduleIdent}.${request.requestId}.nack`, async (data) => {
+    const nack = JSON.parse(data);
+    log.info(`Download manager NACK request for ${request.gameId}:`, nack);
+    // If nack.newRequestId is a string, try subscribing to it for process output
+    // eslint-disable-next-line no-prototype-builtins
+    const subscribeTo = nack.message.hasOwnProperty('subscribeTo') ? nack.message.subscribeTo : false;
+    if (subscribeTo) {
       log.warn('Download appears to be in process, subscribing to output');
-      ipc.subscribe(`${moduleIdent}.${nack.message}.progress`, (progress) => {
+      // subscribe
+      ipc.subscribe(`${subscribeTo}.progress`, (progress) => {
         progress = JSON.parse(progress);
-        log.debug(progress.message);
+        // log.debug(progress.message.progressLine);
       });
-      ipc.subscribe(`${moduleIdent}.${nack.message}.status`, (status) => {
+
+      ipc.subscribe(`${subscribeTo}.output`, (output) => {
+        output = JSON.parse(output);
+        log.debug(output);
+      });
+
+      ipc.subscribe(`${subscribeTo}.status`, (status) => {
         status = JSON.parse(status);
         log.info(`Download status update for ${request.gameId}: ${status.message}`);
         if (status.message === 'completed') {
           exit(moduleIdent, ipc, 0);
         }
       });
-      ipc.subscribe(`${moduleIdent}.${nack.message}.error`, (error) => {
-        error = JSON.parse(error.toString());
-        log.error(`Error while downloading ${request.gameId}: ${error.message}`);
-        if (error.message == 'SHUTDOWN') {
-          exit(moduleIdent, ipc, 1);
-        }
-      });
     } else {
       // If we don't get the channel, exit
-      log.warn('Received NACK but no in-progress channel, exiting');
-      exit(moduleIdent, ipc, 1);
+      log.error('Received NACK but no in-progress channel, exiting');
+      log.error(nack);
     }
   });
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.error`, (error) => {
+  ipc.subscribe(`${request.replyTo}.error`, (error) => {
     error = JSON.parse(error.toString());
     log.error(`Error while downloading ${request.gameId}: ${error.message}`);
     if (error.message == 'SHUTDOWN') {
@@ -235,12 +241,17 @@ function downloadGame(argv) {
     }
   });
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.progress`, (progress) => {
+  ipc.subscribe(`${request.replyTo}.progress`, (progress) => {
     progress = JSON.parse(progress);
-    log.debug(progress.message);
+    // log.debug(progress.message.progressLine);
   });
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.status`, (status) => {
+  ipc.subscribe(`${request.replyTo}.output`, (output) => {
+    output = JSON.parse(output);
+    log.debug(output);
+  });
+
+  ipc.subscribe(`${request.replyTo}.status`, (status) => {
     status = JSON.parse(status);
     log.info(`Download status update for ${request.gameId}: ${status.message}`);
     if (status.message === 'completed') {

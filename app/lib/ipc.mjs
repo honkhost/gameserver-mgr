@@ -70,7 +70,7 @@ function checkIpcPath() {
  * @returns {void}
  */
 export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '') {
-  if (process.env.IPC_DEBUG) {
+  if (process.env.DEBUG_IPC) {
     log.debug(`Setting ping reply for ${moduleIdent} to "${JSON.stringify(status, null, 2)}"`);
   }
 

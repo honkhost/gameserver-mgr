@@ -89,18 +89,14 @@ async function downloadUpdateGame(request) {
     await lockFile(`downloadManager-downloadUpdateGame-${request.gameId}`);
   } catch (error) {
     // If it errors, check to see if a download is running for our game
-    if (
-      error.code == 'EEXIST' &&
-      // eslint-disable-next-line no-prototype-builtins
-      runningDownloads.hasOwnProperty(`${request.gameId}`) &&
-      runningDownloads[request.gameId].downloadLocked
-    ) {
+    if (error.code == 'EEXIST') {
       // If so, send the NACK along with the channel id they can sub to for progress messages
       log.warn('Could not lock, sending NACK with currently running download');
       sendRequestReply(
         'nack',
         {
-          newRequestId: runningDownloads[request.gameId].request.requestId,
+          subscribeTo: runningDownloads[request.gameId].request.replyTo,
+          requestId: runningDownloads[request.gameId].request.requestId,
         },
         request,
       );

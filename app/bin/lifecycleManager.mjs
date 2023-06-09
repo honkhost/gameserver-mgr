@@ -247,6 +247,7 @@ function downloadUpdateGame(
       status = JSON.parse(status);
       log.info(`Download status update for ${request.gameId}: ${JSON.stringify(status.message, null, 2)}`);
       if (status.message === 'completed') {
+        log.debug(status.message);
         // Do something
         ipc.unsubscribe(`${moduleIdent}.${request.requestId}.error`);
         ipc.unsubscribe(`${moduleIdent}.${request.requestId}.status`);
@@ -274,12 +275,22 @@ function watchDownloadProgress(request, progressSink) {
     log.info(`Download manager NACK request for ${request.gameId}:`, nack);
     // If nack.newRequestId is a string, try subscribing to it for process output
     // eslint-disable-next-line no-prototype-builtins
-    const newRequestId = nack.message.hasOwnProperty('newRequestId') ? nack.message.newRequestId : false;
-    if (newRequestId) {
+    const subscribeTo = nack.message.hasOwnProperty('subscribeTo') ? nack.message.subscribeTo : false;
+    if (subscribeTo) {
       log.warn('Download appears to be in process, subscribing to output');
       // subscribe
-      request.requestId = newRequestId;
-      watchDownloadProgress(request, progressSink);
+      ipc.subscribe(`${subscribeTo}.progress`, (progress) => {
+        progress = JSON.parse(progress);
+        log.debug(progress);
+      });
+
+      ipc.subscribe(`${subscribeTo}.status`, (status) => {
+        status = JSON.parse(status);
+        log.info(`Download status update for ${request.gameId}: ${status.message}`);
+        if (status.message === 'completed') {
+          exit(moduleIdent, ipc, 0);
+        }
+      });
     } else {
       // If we don't get the channel, exit
       log.error('Received NACK but no in-progress channel, exiting');
