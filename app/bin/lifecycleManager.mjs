@@ -8,6 +8,7 @@ import { lockFile, unlockFile } from '../lib/lockfile.mjs';
 import { setupTerminationSignalHandlers, exit } from '../lib/exitHandlers.mjs';
 import { setupLog, isoTimestamp } from '../lib/log.mjs';
 import { getDirName } from '../lib/dirname.mjs';
+import { parseBool } from '../lib/parseBool.mjs';
 
 // Nodejs stdlib
 import { default as Stream } from 'node:stream';
@@ -46,16 +47,56 @@ setPingReply(moduleIdent, ipc, 'init');
 //
 // Globals
 
-// Steamcmd install directory
-const _steamCmdDir = process.env.STEAMCMD_DIR || '/opt/gsm/steamcmd';
-const steamCmdDir = path.resolve(path.normalize(_steamCmdDir));
+// Pull gameID and instanceId from ennvvars
+const gameId = process.env.GAME_ID || false;
+const instanceId = process.env.INSTANCE_ID || false;
+const _serverFilesRootDir = process.env.SERVER_FILES_ROOT_DIR || false;
 
-// Server files directory
-const _serverFilesDir = process.env.SERVER_FILES_DIR || '/opt/gsm/gamefiles';
-const serverFilesDir = path.resolve(path.normalize(_serverFilesDir));
+// Validate that those three vars were provided
+if (!gameId || gameId === '') {
+  throw new Error('process.env.GAME_ID required!');
+}
+if (!instanceId || instanceId === '') {
+  throw new Error('process.env.INSTANCE_ID required!');
+}
+if (!_serverFilesRootDir || _serverFilesRootDir === '') {
+  throw new Error('process.env.SERVER_FILES_ROOT_DIR required!');
+}
 
-// Pull gameID from ennvvars
-const gameId = process.env.GAME_ID || 'csgo';
+// Server files directories
+const serverFilesRootDir = path.resolve(_serverFilesRootDir);
+const serverFilesBaseDir = path.resolve(serverFilesRootDir, 'base', gameId);
+const serverFilesConfigDir = path.resolve(serverFilesRootDir, 'config', gameId, instanceId);
+const steamCmdDir = path.resolve(serverFilesRootDir, 'steamcmd');
+
+// Do we force remove old files before downloading them?
+const steamcmdFilesForce = parseBool(process.env.STEAMCMD_FILES_FORCE) || false;
+const serverFilesForce = parseBool(process.env.SERVER_FILES_FORCE) || false;
+
+// Steamcmd auth
+const steamcmdAnonymous = parseBool(process.env.STEAMCMD_LOGIN_ANON) || true;
+const steamcmdUsername = process.env.STEAMCMD_LOGIN_USERNAME || false;
+const steamcmdPassword = process.env.STEAMCMD_LOGIN_PASSWORD || false;
+const steamcmdMultiFactorEnabled = parseBool(process.env.STEAMCMD_TWOFACTOR_ENABLED) || false;
+
+// Force validate downloads?
+const steamcmdForceValidate = parseBool(process.env.STEAMCMD_INITIAL_DOWNLOAD_VALIDATE) || false;
+
+// Git repo to download from
+// Default: honk.host
+const serverConfigRepo = process.env.SERVER_CONFIG_REPO || false;
+// Force remove config and re-clone?
+// Default: do 'git pull' on the config dir
+const serverConfigFilesForce = process.env.SERVER_CONFIG_FILES_FORCE || false;
+// SSH key to use
+const serverConfigRepoSshKey = process.env.SERVER_CONFIG_SSH_KEY || false;
+
+// Options to pass downloadUpdateGameConfigGit below
+const downloadUpdateGameConfigGitOptions = {
+  repoUrl: '',
+  privKey: '',
+  gameConfigDir: serverFilesConfigDir,
+};
 
 // Keep track of other modules
 const moduleStatus = {
@@ -85,45 +126,64 @@ ipc.on('start', async () => {
   // Tell everyone we're alive
   setPingReply(moduleIdent, ipc, 'running');
 
-  // Fire off broadcast pings to detect module status
-  // setupPingListeners();
-
   // Wait for downloadManager to be available
+  // We give it extra time as this is our initial startup
   try {
-    await waitDownloadManagerAvailable({ timeout: 30 });
+    await waitModuleRunning('downloadManager', { timeout: 60 });
   } catch (error) {
     log.error('Timeout waiting for downloadManager, exiting...');
+  }
+  // Ask downloadManager to download our base game
+  try {
+    // Build the download request
+    const downloadUpdateGameOptions = {
+      // TODO: implement timeouts inside downloadUpdateGame
+      timeout: 30, // between status updates
+      gameId: gameId,
+      instanceId: instanceId,
+      validate: steamcmdForceValidate,
+      steamCmdForce: steamcmdFilesForce,
+      serverFilesForce: serverFilesForce,
+      anonymous: steamcmdAnonymous,
+      username: steamcmdUsername,
+      password: steamcmdPassword,
+      steamCmdDir: steamCmdDir,
+      downloadDir: serverFilesBaseDir,
+      steamcmdMultiFactorEnabled: steamcmdMultiFactorEnabled,
+    };
+    // Request the download, wait for it to finish or error
+    const downloadResult = await downloadUpdateGame(downloadUpdateGameOptions);
+    // if it failed out, throw
+    // TODO: retry gracefully
+    if (downloadResult.message.reason != 'completed') {
+      log.error(`Unable to download game ${gameId}`);
+      exit(moduleIdent, ipc, 3);
+    } else {
+      // if it succeeded, continue
+      log.debug('downloadResult:', downloadResult);
+    }
+  } catch (error) {
+    // Throw any unknown errors
+    log.error(`Error downloading ${gameId}`, error);
     exit(moduleIdent, ipc, 2);
   }
 
-  /*
-      options = {
-        timeout: 30,
-        gameId: '740',
-        validate: false,
-        steamCmdForce: false,
-        serverFilesForce: false,
-        anonymous: true,
-        username: '',
-        password: '',
-      }
-  */
-  // Ask downloadManager to download and then wait for it to finish
+  // Verify repoManager is ready
+  // It should be by now, so we stick with default 30s timeout
   try {
-    await downloadUpdateGame({
-      gameId: gameId,
-      validate: true,
-      steamCmdForce: process.env.STEAMCMD_FILES_FORCE || false,
-      serverFilesForce: process.env.SERVER_FILES_FORCE || false,
-      anonymous: true,
-      steamCmdDir: steamCmdDir,
-      serverFilesDir: serverFilesDir,
-    });
+    await waitModuleRunning('repoManager');
   } catch (error) {
-    log.error(`Error downloading ${gameId}`, error);
+    log.error('Timeout waiting for repoManager, exiting...');
+    exit(moduleIdent, ipc, 2);
   }
 
-  // Ask repoManager to download configs from git
+  // Ask it to download configs from git
+  try {
+    await downloadUpdateGameConfigGit(downloadUpdateGameConfigGitOptions);
+  } catch (error) {
+    log.error(error);
+    exit(moduleIdent, ipc, 2);
+  }
 
   // Ask overlayManager to setup the overlays
 
@@ -160,7 +220,7 @@ function setupPingListeners() {
  * @param {Number} timeout - seconds to wait for downloadManager readiness
  * @returns {Promise<Void>} resolves when downloadManager is ready, rejects when timeout is exceeded
  */
-function waitDownloadManagerAvailable(options = { timeout: 30 }) {
+function waitModuleRunning(target, options = { timeout: 30 }) {
   return new Promise((resolve, reject) => {
     var pingCounter = 0;
 
@@ -180,7 +240,7 @@ function waitDownloadManagerAvailable(options = { timeout: 30 }) {
         msgId: msgId,
         replyTo: `${moduleIdent}.${msgId}.pong`,
       };
-      ipc.publish('downloadManager.ping', JSON.stringify(pingRequest));
+      ipc.publish(`${target}.ping`, JSON.stringify(pingRequest));
     }, 1000);
 
     // Act on replies
@@ -207,117 +267,117 @@ function waitDownloadManagerAvailable(options = { timeout: 30 }) {
 function downloadUpdateGame(
   options = {
     timeout: 30,
-    gameId: '740',
+    instanceId: instanceId,
+    gameId: '',
     validate: false,
     steamCmdForce: false,
     serverFilesForce: false,
     steamCmdDir: '',
-    serverFilesDir: '',
+    downloadDir: '',
     anonymous: true,
     username: '',
     password: '',
+    steamcmdMultiFactorEnabled: steamcmdMultiFactorEnabled,
   },
 ) {
   return new Promise((resolve, reject) => {
     // Send download request
     const requestId = crypto.randomUUID();
-
     const request = {
       requestId: requestId,
       replyTo: `${moduleIdent}.${requestId}`,
-      gameId: gameId,
+      gameId: options.gameId,
       validate: options.validate,
       steamCmdForce: options.steamCmdForce,
       steamCmdDir: options.steamCmdDir,
       serverFilesForce: options.serverFilesForce,
-      serverFilesDir: options.serverFilesDir,
+      downloadDir: options.downloadDir,
       anonymous: options.anonymous,
     };
 
     log.info(`Sending request for ${request.gameId} to the download manager`);
     ipc.publish(`downloadManager.downloadUpdateGame`, JSON.stringify(request));
 
-    ipc.subscribe(`${moduleIdent}.${request.requestId}.error`, (response) => {
-      response = JSON.parse(response);
-      log.error(`Error while downloading ${request.gameId}: ${JSON.stringify(response, null, 2)}`);
-      return reject(new Error(response.message));
-    });
-
-    ipc.subscribe(`${moduleIdent}.${request.requestId}.status`, (status) => {
-      status = JSON.parse(status);
-      log.info(`Download status update for ${request.gameId}: ${JSON.stringify(status.message, null, 2)}`);
-      if (status.message === 'completed') {
-        log.debug(status.message);
-        // Do something
-        ipc.unsubscribe(`${moduleIdent}.${request.requestId}.error`);
-        ipc.unsubscribe(`${moduleIdent}.${request.requestId}.status`);
-        return resolve(status);
+    ipc.subscribe(`${moduleIdent}.${request.requestId}.ack`, async (data) => {
+      const ack = JSON.parse(data);
+      log.info(`Download manager ACK request for ${request.gameId}:`, ack);
+      // eslint-disable-next-line no-prototype-builtins
+      const subscribeTo = ack.message.hasOwnProperty('subscribeTo') ? ack.message.subscribeTo : false;
+      try {
+        const result = await waitDownloadComplete(subscribeTo);
+        return resolve(result);
+      } catch (error) {
+        log.error(error);
+        return reject(error);
       }
     });
 
-    // Subscribe to progress reports
-    const progressSink = new Stream.PassThrough({ end: false });
-    watchDownloadProgress(request, progressSink);
-    // Timeout if one doesn't show up for a while
-    // Resolve when completed
+    ipc.subscribe(`${moduleIdent}.${request.requestId}.nack`, async (data) => {
+      const nack = JSON.parse(data);
+      log.info(`Download manager NACK request for ${request.gameId}:`, nack);
+      // If nack.newRequestId is a string, try subscribing to it for process output
+      // eslint-disable-next-line no-prototype-builtins
+      const subscribeTo = nack.message.hasOwnProperty('subscribeTo') ? nack.message.subscribeTo : false;
+      if (subscribeTo) {
+        try {
+          const result = await waitDownloadComplete(subscribeTo);
+          return resolve(result);
+        } catch (error) {
+          log.error(error);
+          return reject(error);
+        }
+      }
+    });
   });
 }
 
-// Subscribe to progress reports
-function watchDownloadProgress(request, progressSink) {
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.ack`, (data) => {
-    const ack = JSON.parse(data);
-    log.info(`Download manager ACK request for ${request.gameId}:`, ack);
+function waitDownloadComplete(channel) {
+  return new Promise((resolve, reject) => {
+    ipc.subscribe(`${channel}.error`, (response) => {
+      response = JSON.parse(response);
+      log.error('Error while downloading:', response);
+      return reject(new Error(response.message));
+    });
+
+    ipc.subscribe(`${channel}.progress`, (data) => {
+      const progress = JSON.parse(data);
+      // log.debug(`Progress message:`, progress);
+    });
+
+    ipc.subscribe(`${channel}.output`, (data) => {
+      const output = JSON.parse(data);
+      // log.debug('Output message:', output);
+    });
+
+    ipc.subscribe(`${channel}.finalStatus`, (data) => {
+      const finalStatus = JSON.parse(data);
+      if (process.env.DEBUG) log.debug('finalStatus:', finalStatus);
+
+      ipc.unsubscribe(`${channel}.ack`);
+      ipc.unsubscribe(`${channel}.nack`);
+      ipc.unsubscribe(`${channel}.error`);
+      ipc.unsubscribe(`${channel}.progress`);
+      ipc.unsubscribe(`${channel}.output`);
+      ipc.unsubscribe(`${channel}.status`);
+      ipc.unsubscribe(`${channel}.finalStatus`);
+      if (finalStatus.message.reason === 'completed') {
+        // Do something
+        return resolve(finalStatus);
+      } else {
+        return reject(finalStatus);
+      }
+    });
   });
+}
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.nack`, async (data) => {
-    const nack = JSON.parse(data);
-    log.info(`Download manager NACK request for ${request.gameId}:`, nack);
-    // If nack.newRequestId is a string, try subscribing to it for process output
-    // eslint-disable-next-line no-prototype-builtins
-    const subscribeTo = nack.message.hasOwnProperty('subscribeTo') ? nack.message.subscribeTo : false;
-    if (subscribeTo) {
-      log.warn('Download appears to be in process, subscribing to output');
-      // subscribe
-      ipc.subscribe(`${subscribeTo}.progress`, (progress) => {
-        progress = JSON.parse(progress);
-        log.debug(progress);
-      });
-
-      ipc.subscribe(`${subscribeTo}.status`, (status) => {
-        status = JSON.parse(status);
-        log.info(`Download status update for ${request.gameId}: ${status.message}`);
-        if (status.message === 'completed') {
-          exit(moduleIdent, ipc, 0);
-        }
-      });
-    } else {
-      // If we don't get the channel, exit
-      log.error('Received NACK but no in-progress channel, exiting');
-      log.error(nack);
-    }
-  });
-
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.progress`, (data) => {
-    const progress = JSON.parse(data);
-    // log.debug(`Progress message:`, progress);
-  });
-
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.output`, (data) => {
-    const output = JSON.parse(data);
-    // log.debug('Output message:', output);
-  });
-
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.status`, (data) => {
-    const status = JSON.parse(data);
-    if (status.message === 'completed') {
-      // Do something
-      ipc.unsubscribe(`${moduleIdent}.${request.requestId}.ack`);
-      ipc.unsubscribe(`${moduleIdent}.${request.requestId}.nack`);
-      ipc.unsubscribe(`${moduleIdent}.${request.requestId}.error`);
-      ipc.unsubscribe(`${moduleIdent}.${request.requestId}.progress`);
-      ipc.unsubscribe(`${moduleIdent}.${request.requestId}.output`);
-      ipc.unsubscribe(`${moduleIdent}.${request.requestId}.status`);
-    }
+function downloadUpdateGameConfigGit(
+  options = {
+    repoUrl: '',
+    privKey: '',
+    gameConfigDir: '',
+  },
+) {
+  return new Promise((resolve, reject) => {
+    return reject(new Error('not yet implemented!'));
   });
 }

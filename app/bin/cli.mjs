@@ -5,9 +5,11 @@ import { setupIpc, setPingReply } from '../lib/ipc.mjs';
 import { lockFile } from '../lib/lockfile.mjs';
 import { handleTerminationSignal, exit } from '../lib/exitHandlers.mjs';
 import { setupLog, isoTimestamp } from '../lib/log.mjs';
+import { parseBool } from '../lib/parseBool.mjs';
 
 // Node stdlib
 import { default as crypto } from 'node:crypto';
+import { default as path } from 'node:path';
 
 // External libs
 import { default as yargs } from 'yargs';
@@ -41,6 +43,10 @@ process.once('SIGTERM', () => {
 // Set initial ping reply
 setPingReply(moduleIdent, ipc, 'init');
 
+// Debug modes
+const debug = parseBool(process.env.DEBUG) || false;
+const steamcmdDebug = parseBool(process.env.DEBUG_STEAMCMD) || false;
+
 //
 // End boilerplate
 
@@ -61,34 +67,46 @@ ipc.on('start', () => {
       'Download a game from steam',
       (yargs) => {
         return yargs
-          .option('force', {
-            type: 'boolean',
-            description: 'Force removal of gameserver files before download',
-          })
           .positional('game', {
             type: 'string',
             describe: 'Game manifest to download',
             demand: true,
           })
+          .option('validate', {
+            type: 'boolean',
+            description: 'Force validation of gameserver files after download',
+            demand: false,
+            default: false,
+          })
+          .option('force', {
+            type: 'boolean',
+            description: 'Force removal of gameserver files before download',
+            demand: false,
+            default: false,
+          })
+          .option('steamcmd-force', {
+            type: 'boolean',
+            description: 'Force removal of steamcmd files before download',
+            demand: false,
+            default: false,
+          })
           .option('username', {
             type: 'string',
             description: 'Username to login to steam with',
             demand: false,
+            default: '',
           })
           .option('password', {
             type: 'string',
             description: 'Password to login to steam with',
             demand: false,
+            default: '',
           })
-          .option('download-directory', {
+          .option('root-directory', {
             type: 'string',
-            description: 'Directory to download server files to',
+            description: 'Root directory for install',
             demand: false,
-          })
-          .option('steamcmd-directory', {
-            type: 'string',
-            description: 'Directory for steamcmd',
-            demand: false,
+            default: '/opt/gsm',
           });
       },
       (argv) => {
@@ -109,11 +127,17 @@ ipc.on('start', () => {
       'cancelDownload <game>',
       'Cancel a game download',
       (yargs) => {
-        return yargs.positional('game', {
-          type: 'string',
-          describe: 'Game download to cancel',
-          demand: true,
-        });
+        return yargs
+          .positional('game', {
+            type: 'string',
+            describe: 'Game download to cancel',
+            demand: true,
+          })
+          .option('cleanup', {
+            type: 'boolean',
+            describe: 'Remove incomplete download',
+            demand: false,
+          });
       },
       (argv) => {
         cancelDownload(argv);
@@ -178,84 +202,147 @@ function sendMessage(argv) {
  * @param {Object} argv - argv as parsed by `yargs.parse(process.argv)`
  */
 function downloadGame(argv) {
+  log.debug(argv);
+  const gameId = argv.game || '';
+
+  if (!gameId || gameId === '') {
+    throw new Error('process.env.gameId required!');
+  }
+  const _serverFilesRootDir = argv['root-directory'] || `/opt/gsm/`;
+  const serverFilesRootDir = path.resolve(_serverFilesRootDir);
+  const serverFilesBaseDir = path.resolve(serverFilesRootDir, 'base', gameId);
+  const steamCmdDir = path.resolve(serverFilesRootDir, 'steamcmd');
+
   const requestId = crypto.randomUUID();
   const request = {
     requestId: requestId,
     replyTo: `${moduleIdent}.${requestId}`,
-    gameId: argv.game || 'csgo',
-    validate: false,
-    steamCmdForce: false,
-    steamCmdDir: '/opt/gsm/steamcmd',
-    serverFilesDir: argv['download-directory'] || '/opt/gsm/csgo',
-    anonymous: argv.username ? false : true,
-    username: argv.username || undefined,
-    password: argv.password || undefined,
-    serverFilesForce: argv.force || false,
+    gameId: gameId,
+    validate: argv['validate'] || false,
+    steamCmdForce: argv['steamcmd-force'] || false,
+    steamCmdDir: steamCmdDir,
+    downloadDir: serverFilesBaseDir,
+    anonymous: argv['username'] ? false : true,
+    username: argv['password'] || '',
+    password: argv['password'] || '',
+    serverFilesForce: argv['force'] || false,
+    steamcmdMultiFactorEnabled: false,
   };
 
   log.info(`Sending request for ${request.gameId} to the download manager`);
   ipc.publish(`downloadManager.downloadUpdateGame`, JSON.stringify(request));
 
-  ipc.subscribe(`${request.replyTo}.ack`, (ack) => {
-    log.info(`Download manager ACK request for ${request.gameId}: ${ack}`);
+  ipc.subscribe(`${moduleIdent}.${request.requestId}.ack`, async (data) => {
+    const ack = JSON.parse(data);
+    if (debug) log.info(`Download manager ACK request for ${request.gameId}:`);
+    // eslint-disable-next-line no-prototype-builtins
+    const subscribeTo = ack.message.hasOwnProperty('subscribeTo') ? ack.message.subscribeTo : false;
+    // Subscribe to the download progress channels
+    // Error messages
+    ipc.subscribe(`${subscribeTo}.error`, (error) => {
+      error = JSON.parse(error.toString());
+      log.error(`Error while downloading ${request.gameId}: ${error.message}`);
+      if (error.message == 'SHUTDOWN') {
+        exit(moduleIdent, ipc, 1);
+      }
+    });
+
+    // Progress messages
+    ipc.subscribe(`${subscribeTo}.progress`, (progress) => {
+      progress = JSON.parse(progress);
+      if (debug) log.debug(progress);
+
+      // If debug is disabled, prettyprint the progress for cli display
+      if (!debug && !steamcmdDebug) {
+        var downloadStage = '';
+        progress.message.downloadStage === 'steamcmd_download' ? (downloadStage = 'Updating Steamcmd') : null;
+        progress.message.downloadStage === 'appid_download' ? (downloadStage = 'Updating Application') : null;
+        const downloadState = progress.message.downloadState;
+        const downloadProgress = progress.message.downloadProgress;
+        const downloadRx = progress.message.downloadProgressReceived;
+        const downloadTotal = progress.message.downloadProgressTotal;
+        log.info(`${downloadStage} - ${downloadState} - ${downloadProgress}% [${downloadRx} / ${downloadTotal}]`);
+      }
+    });
+
+    // Raw download output
+    ipc.subscribe(`${subscribeTo}.output`, (output) => {
+      output = JSON.parse(output);
+      const logLine = JSON.parse(output.message);
+      if (steamcmdDebug) log.debug(`[${logLine.timestamp}] ${logLine.line}`);
+    });
+
+    // Subscribe to finalStatus messages - download completed / failed / canceled / etc
+    ipc.subscribe(`${subscribeTo}.finalStatus`, (status) => {
+      status = JSON.parse(status);
+      log.info(`Download status update for ${request.gameId}:`, status.message);
+      if (status.message.reason === 'completed') {
+        exit(moduleIdent, ipc, 0);
+      }
+    });
   });
 
-  ipc.subscribe(`${moduleIdent}.${request.requestId}.nack`, async (data) => {
-    const nack = JSON.parse(data);
-    log.info(`Download manager NACK request for ${request.gameId}:`, nack);
+  ipc.subscribe(`${moduleIdent}.${request.requestId}.nack`, async (nack) => {
+    nack = JSON.parse(nack);
+
+    // Friendly display of the reason for the nack
+    var displayNack = '';
+    nack instanceof Error ? (displayNack = nack.message) : (displayNack = nack.message.reason);
+    log.warn(`Download manager NACK request for ${request.gameId}:`, displayNack);
+
     // If nack.newRequestId is a string, try subscribing to it for process output
     // eslint-disable-next-line no-prototype-builtins
     const subscribeTo = nack.message.hasOwnProperty('subscribeTo') ? nack.message.subscribeTo : false;
-    if (subscribeTo) {
+    if (nack.message.alreadyRequested && subscribeTo) {
       log.warn('Download appears to be in process, subscribing to output');
-      // subscribe
+      // Subscribe to the download progress channels
+      // Error messages
+      ipc.subscribe(`${subscribeTo}.error`, (error) => {
+        error = JSON.parse(error.toString());
+        log.error(`Error while downloading ${request.gameId}: ${error.message}`);
+        if (error.message == 'SHUTDOWN') {
+          exit(moduleIdent, ipc, 1);
+        }
+      });
+
+      // Progress messages
       ipc.subscribe(`${subscribeTo}.progress`, (progress) => {
         progress = JSON.parse(progress);
-        // log.debug(progress.message.progressLine);
+        if (debug) log.debug(progress);
+
+        // If debug is disabled, prettyprint the progress for cli display
+        if (!debug && !steamcmdDebug) {
+          var downloadStage = '';
+          progress.message.downloadStage === 'steamcmd_download' ? (downloadStage = 'Updating Steamcmd') : null;
+          progress.message.downloadStage === 'appid_download' ? (downloadStage = 'Updating Application') : null;
+          const downloadState = progress.message.downloadState;
+          const downloadProgress = progress.message.downloadProgress;
+          const downloadRx = progress.message.downloadProgressReceived;
+          const downloadTotal = progress.message.downloadProgressTotal;
+          log.info(`${downloadStage} - ${downloadState} - ${downloadProgress}% [${downloadRx} / ${downloadTotal}]`);
+        }
       });
 
+      // Raw download output
       ipc.subscribe(`${subscribeTo}.output`, (output) => {
         output = JSON.parse(output);
-        log.debug(output);
+        const logLine = JSON.parse(output.message);
+        if (steamcmdDebug) log.debug(`[${logLine.timestamp}] ${logLine.line}`);
       });
 
-      ipc.subscribe(`${subscribeTo}.status`, (status) => {
+      // Subscribe to finalStatus messages - download completed / failed / canceled / etc
+      ipc.subscribe(`${subscribeTo}.finalStatus`, (status) => {
         status = JSON.parse(status);
-        log.info(`Download status update for ${request.gameId}: ${status.message}`);
-        if (status.message === 'completed') {
+        log.info(`Download status update for ${request.gameId}:`, status.message);
+        if (status.message.reason === 'completed') {
           exit(moduleIdent, ipc, 0);
         }
       });
     } else {
       // If we don't get the channel, exit
-      log.error('Received NACK but no in-progress channel, exiting');
+      log.error('Received NACK for unknown reason, exiting');
       log.error(nack);
-    }
-  });
-
-  ipc.subscribe(`${request.replyTo}.error`, (error) => {
-    error = JSON.parse(error.toString());
-    log.error(`Error while downloading ${request.gameId}: ${error.message}`);
-    if (error.message == 'SHUTDOWN') {
-      exit(moduleIdent, ipc, 1);
-    }
-  });
-
-  ipc.subscribe(`${request.replyTo}.progress`, (progress) => {
-    progress = JSON.parse(progress);
-    // log.debug(progress.message.progressLine);
-  });
-
-  ipc.subscribe(`${request.replyTo}.output`, (output) => {
-    output = JSON.parse(output);
-    log.debug(output);
-  });
-
-  ipc.subscribe(`${request.replyTo}.status`, (status) => {
-    status = JSON.parse(status);
-    log.info(`Download status update for ${request.gameId}: ${status.message}`);
-    if (status.message === 'completed') {
-      exit(moduleIdent, ipc, 0);
+      exit(moduleIdent, ipc, 3);
     }
   });
 }
@@ -279,9 +366,11 @@ function cancelDownload(argv) {
     Object.keys(list).forEach((key) => {
       // eslint-disable-next-line security/detect-object-injection
       const listItem = list[key];
-      log.debug(listItem);
+      if (debug) log.debug(listItem);
 
-      if (key === argv.game) {
+      log.info(`Download in progress: ${listItem.gameId} ${listItem.progressSnapshot.downloadProgress}%`);
+
+      if (key === argv['game']) {
         const requestIdToCancel = listItem.request.requestId;
 
         const downloadCancelRequestRequestId = crypto.randomUUID();
@@ -291,17 +380,20 @@ function cancelDownload(argv) {
           timestamp: Date.now(),
           message: {
             command: 'cancel',
+            cleanup: argv['cleanup'] || false,
           },
         };
-        ipc.subscribe(`${downloadCancelRequest.replyTo}.status`, (reply) => {
+        ipc.subscribe(`${listItem.request.replyTo}.finalStatus`, (reply) => {
           reply = JSON.parse(reply);
-          if (reply.message === 'canceled') {
-            log.info(`Download request for ${argv.game} canceled`);
+          if (debug) log.debug('cancelDownload request reply', reply);
+          if (reply.message.status === 'canceled') {
+            log.info(`Download request for ${argv['game']} canceled successfully`);
             exit(moduleIdent, ipc, 0);
           }
         });
 
-        log.debug(`sending req to ${reply.moduleIdent}.${requestIdToCancel}.cancelDownload`);
+        log.info(`Sending download cancel request for ${argv['game']}`);
+        if (debug) log.debug(`sending req to ${reply.moduleIdent}.${requestIdToCancel}.cancelDownload`);
         ipc.publish(`${reply.moduleIdent}.${requestIdToCancel}.cancelDownload`, JSON.stringify(downloadCancelRequest));
       }
     });

@@ -37,8 +37,8 @@ export function downloadFile(
       return reject('output path required');
     }
 
-    const normalizedCwdPath = path.normalize(outputPath);
-    const normalizedFilePath = path.normalize(`${normalizedCwdPath}/steamcmd.tar`);
+    const normalizedCwdPath = path.normalize(path.resolve(outputPath));
+    const normalizedFilePath = path.normalize(path.resolve(`${normalizedCwdPath}/steamcmd.tar`));
     // eslint-disable-next-line security/detect-non-literal-fs-filename
     const outputFile = fs.createWriteStream(normalizedFilePath);
     needle
@@ -48,16 +48,19 @@ export function downloadFile(
         if (error) return reject(error);
         log.debug(`Completed download of ${url.split('/')[url.split('/').length - 1]} to ${outputPath}`);
         if (options.untar) {
-          // eslint-disable-next-line promise/no-promise-in-callback
-          await extractTarGz(normalizedFilePath, {
-            cwd: normalizedCwdPath,
-          })
-            .then(() => {
-              return resolve();
+          // Schedule the untar for next tick so it has a better chance at succeeding
+          process.nextTick(() => {
+            // eslint-disable-next-line promise/no-promise-in-callback
+            extractTarGz(normalizedFilePath, {
+              cwd: normalizedCwdPath,
             })
-            .catch((error) => {
-              return reject(error);
-            });
+              .then(() => {
+                return resolve();
+              })
+              .catch((error) => {
+                return reject(error);
+              });
+          });
         } else {
           return resolve();
         }
@@ -82,7 +85,7 @@ export function extractTarGz(file = '', options = {}) {
 
     // file path to extract
     if (file === '') return reject(new Error('file path required'));
-    tarOptions.file = file;
+    tarOptions.file = path.normalize(path.resolve(file));
 
     // --strip=N
     // eslint-disable-next-line no-prototype-builtins
@@ -90,7 +93,7 @@ export function extractTarGz(file = '', options = {}) {
 
     // -C /some/path
     // eslint-disable-next-line no-prototype-builtins
-    if (options.hasOwnProperty('cwd')) tarOptions.cwd = options.cwd;
+    if (options.hasOwnProperty('cwd')) tarOptions.cwd = path.normalize(path.resolve(options.cwd));
 
     // Read the file in and extract it
     tar

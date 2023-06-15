@@ -3,6 +3,6 @@ export const manifest = {
   displayName: 'Counter-Strike: Global Offensive',
   downloadType: 'steamcmd',
   downloadID: '740',
-  binDir: './', // relative to serverFilesDir
+  binDir: './', // relative to serverFilesBaseDir
   binName: 'srcds_linux',
 };

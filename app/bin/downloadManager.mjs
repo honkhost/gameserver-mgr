@@ -9,14 +9,18 @@ import { setupTerminationSignalHandlers } from '../lib/exitHandlers.mjs';
 import { setupLog, isoTimestamp } from '../lib/log.mjs';
 import { steamCmdDownloadSelf, steamCmdDownloadAppid } from '../lib/steamcmd.mjs';
 import { getDirName } from '../lib/dirname.mjs';
+import { parseBool } from '../lib/parseBool.mjs';
 
 // Nodejs stdlib
+import { default as fs } from 'node:fs';
 import { default as Stream } from 'node:stream';
 import { default as path } from 'node:path';
 
 //
 // Start boilerplate
 const moduleIdent = 'downloadManager';
+
+const supportedGames = ['csgo'];
 
 // Populate __dirname
 const __dirname = getDirName();
@@ -37,11 +41,6 @@ const ipc = await setupIpc(moduleIdent);
 // Setup our termination handlers for SIGTERM and SIGINT
 setupTerminationSignalHandlers(moduleIdent, ipc);
 
-// Tell everyone we're alive
-ipc.on('start', () => {
-  setPingReply(moduleIdent, ipc, 'ready');
-});
-
 //
 // End boilerplate
 
@@ -53,6 +52,11 @@ const runningDownloads = {};
 
 //
 // Start logic
+
+// Tell everyone we're alive
+ipc.on('start', () => {
+  setPingReply(moduleIdent, ipc, 'ready');
+});
 
 // Subscribe to downloadUpdateGame requests
 ipc.subscribe('downloadManager.downloadUpdateGame', downloadUpdateGame);
@@ -74,19 +78,35 @@ ipc.subscribe('downloadManager.listRunningDownloads', listRunningDownloads);
  * @param {Boolean} request.steamCmdForce - false
  * @param {String} request.steamCmdDir - '/opt/gsm/steamcmd'
  * @param {Boolean} request.serverFilesForce - false
- * @param {String} request.serverFilesDir - '/opt/gsm/csgo'
+ * @param {String} request.downloadDir - '/opt/gsm/csgo'
  * @param {Boolean} request.anonymous -  true
  * @param {String} request.username - ''
  * @param {String} request.password - ''
+ * @param {Boolean} request.steamcmdMultiFactorEnabled - false
  * @returns {Void}
  */
 async function downloadUpdateGame(request) {
   request = JSON.parse(request);
-  log.info(`Incoming downloadUpdateGame request for ${request.gameId}`);
+  log.info(`Incoming downloadUpdateGame request:`, request);
+
+  // Verify caller provided an appid and we support downloading it
+  if (!request.gameId) {
+    log.error('handleIncomingRequest called without gameId, sending error');
+    sendRequestReply('error', new Error('gameId required'), request);
+    await unlockFile(`downloadManager-${request.gameId}`);
+    return;
+  }
+  if (!supportedGames.includes(request.gameId)) {
+    log.error('invalid appid requested');
+    sendRequestReply('error', new Error('gameId unsupported'), request);
+    await unlockFile(`downloadManager-${request.gameId}`);
+    return;
+  }
+
   // First acquire a download lock
   try {
     // Try to lock
-    await lockFile(`downloadManager-downloadUpdateGame-${request.gameId}`);
+    await lockFile(`downloadManager-${request.gameId}`);
   } catch (error) {
     // If it errors, check to see if a download is running for our game
     if (error.code == 'EEXIST') {
@@ -95,8 +115,11 @@ async function downloadUpdateGame(request) {
       sendRequestReply(
         'nack',
         {
+          alreadyRequested: true,
+          reason: 'already requested',
           subscribeTo: runningDownloads[request.gameId].request.replyTo,
           requestId: runningDownloads[request.gameId].request.requestId,
+          request: request,
         },
         request,
       );
@@ -109,32 +132,40 @@ async function downloadUpdateGame(request) {
     return;
   }
 
-  // Verify caller provided an appid
-  if (!request.gameId) {
-    log.error('handleIncomingRequest called without gameId, sending error');
-    sendRequestReply('error', new Error('gameId required'), request);
+  // We don't support multifactor (yet)
+  // TODO multifactor auth
+  if (request.steamcmdMultiFactorEnabled) {
+    log.error('multifactor auth not supported');
+    sendRequestReply('error', new Error('multifactor auth not supported'), request);
+    await unlockFile(`downloadManager-${request.gameId}`);
+    return;
   }
+
+  // Push our in-progress download to our tracking object
+  runningDownloads[request.gameId] = {
+    request: request,
+    gameId: request.gameId,
+    downloadLocked: null,
+    downloadState: null,
+    lastLog: [],
+    progressSnapshot: {},
+    error: false,
+  };
+  runningDownloads[request.gameId].downloadLocked = true;
+  runningDownloads[request.gameId].downloadState = 'preparing';
 
   // Load the gameInfo manifest
   try {
     var gameInfo = await loadManifest(request.gameId);
   } catch (error) {
+    runningDownloads[request.gameId].error = error;
     sendRequestReply('error', error, request);
+    await unlockFile(`downloadManager-${request.gameId}`);
+    return;
   }
 
   // Prepare a variable to hold our download result
   var result = false;
-
-  // Push our in-progress download to our tracking object
-  runningDownloads[request.gameId] = {
-    request: request,
-    downloadLocked: null,
-    downloadState: null,
-    lastLog: [],
-    progressSnapshot: {},
-  };
-  runningDownloads[request.gameId].downloadLocked = true;
-  runningDownloads[request.gameId].downloadState = 'preparing';
 
   // Setup an output stream to forward logs through
   const outputSink = new Stream.PassThrough({ end: false });
@@ -149,7 +180,7 @@ async function downloadUpdateGame(request) {
   outputSink.on('data', (data) => {
     const output = data.toString();
     runningDownloads[request.gameId].lastLog.unshift(output);
-    runningDownloads[request.gameId].lastLog.length = Math.min(runningDownloads[request.gameId].lastLog.length, 5);
+    runningDownloads[request.gameId].lastLog.length = Math.min(runningDownloads[request.gameId].lastLog.length, 1000);
     sendRequestReply('output', output, request);
   });
 
@@ -166,7 +197,14 @@ async function downloadUpdateGame(request) {
   setPingReply(moduleIdent, ipc, 'preparing');
 
   // Then ack the request
-  sendRequestReply('ack', 'ack', request);
+  sendRequestReply(
+    'ack',
+    {
+      subscribeTo: request.replyTo,
+      requestId: request.requestId,
+    },
+    request,
+  );
 
   // Subscribe to cancel download messages
   ipc.subscribe(`${moduleIdent}.${request.requestId}.cancelDownload`, (cancelRequest) => {
@@ -182,9 +220,28 @@ async function downloadUpdateGame(request) {
 
     commandSink.on('data', (response) => {
       response = JSON.parse(response);
-      if (response.reason === 'canceled') {
+      if (response.status === 'ackCanceled') {
+        // Build response object
+        const response = {
+          status: 'canceled',
+          error: false,
+        };
+
+        // If cleanup is specified, rm the incomplete files
+        if (cancelRequest.message.cleanup) {
+          log.warn('cancelRequest.cleanup is true, removing incomplete files!');
+          try {
+            fs.rmSync(request.downloadDir, { recursive: true, force: true });
+            response.cleanup = 'successful';
+          } catch (error) {
+            log.error(error);
+            response.error = error;
+            response.cleanup = 'failed';
+          }
+        }
+
         // Tell the 3rd party who asked for the cancel that we did
-        sendRequestReply('status', 'canceled', {
+        sendRequestReply('finalStatus', response, {
           requestId: request.requestId,
           replyTo: cancelRequest.replyTo,
         });
@@ -207,6 +264,7 @@ async function downloadUpdateGame(request) {
         await steamCmdDownloadSelf({
           force: request.steamCmdForce,
           steamCmdDir: request.steamCmdDir,
+          steamcmdMultiFactorEnabled: request.steamcmdMultiFactorEnabled,
         });
 
         // Then download/update the game
@@ -219,7 +277,8 @@ async function downloadUpdateGame(request) {
             username: request.username,
             password: request.password,
             steamCmdDir: request.steamCmdDir,
-            serverFilesDir: request.serverFilesDir,
+            downloadDir: request.downloadDir,
+            steamcmdMultiFactorEnabled: request.steamcmdMultiFactorEnabled,
           },
           // Passing through a Stream.Writable for steamcmd stdout and progress indication
           outputSink,
@@ -229,7 +288,7 @@ async function downloadUpdateGame(request) {
         );
 
         // Send a final reply to the request
-        sendRequestReply('status', result, request);
+        sendRequestReply('finalStatus', result, request);
 
         // Unsubscribe from cancel requests
         ipc.unsubscribe(`${moduleIdent}.${request.requestId}.cancelDownload`);
@@ -241,7 +300,7 @@ async function downloadUpdateGame(request) {
         setPingReply(moduleIdent, ipc, 'ready');
 
         // And unlock
-        await unlockFile(`downloadManager-downloadUpdateGame-${request.gameId}`);
+        await unlockFile(`downloadManager-${request.gameId}`);
         return;
       } catch (error) {
         if (error != null) {
@@ -253,7 +312,7 @@ async function downloadUpdateGame(request) {
           sendRequestReply('error', error, request);
           setPingReply(moduleIdent, ipc, 'error');
           // Unlock and return
-          await unlockFile(`downloadManager-downloadUpdateGame-${request.gameId}`);
+          await unlockFile(`downloadManager-${request.gameId}`);
           return;
         } else {
           log.error('Unknown error from steamcmd!', error);
@@ -269,7 +328,7 @@ async function downloadUpdateGame(request) {
       // Unsub from cancel download requests
       ipc.unsubscribe(`${moduleIdent}.${request.requestId}.cancelDownload`);
       // Unlock and return
-      await unlockFile(`downloadManager-downloadUpdateGame-${request.gameId}`);
+      await unlockFile(`downloadManager-${request.gameId}`);
       return;
   }
 }
@@ -305,17 +364,6 @@ async function sendRequestReply(channel, message, request) {
     message: message instanceof Error ? message.message.toString() : message,
     error: message instanceof Error ? true : false,
   };
-
-  /*
-  // Fancy handling for shutdown-in-progress state
-  if (statusMsg.error) {
-    if (message.message === 'SHUTDOWN') {
-      setPingReply(moduleIdent, ipc, 'shutdown');
-    } else {
-      setPingReply(moduleIdent, ipc, 'error');
-    }
-  }
-  */
 
   // Fire off the reply (hopefully they're listening)
   await ipc.publish(`${request.replyTo}.${channel}`, JSON.stringify(statusMsg));

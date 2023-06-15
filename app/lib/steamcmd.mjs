@@ -19,6 +19,10 @@ const log = setupLog('lib/steamcmd.mjs');
 const steamcmdUrl =
   process.env.STEAMCMD_DOWNLOAD_URL || 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz';
 
+// Debug modes
+const debug = process.env.DEBUG || false;
+const steamcmdDebug = process.env.DEBUG_STEAMCMD || false;
+
 // Signal forwarder for steamcmd child processes
 // We need this so we don't attach multiple listeners to process.on('SIGTERM')
 // that we then have problems cleaning up later on
@@ -43,7 +47,7 @@ process.on('SIGINT', () => {
  * @param {String} options.username - login username
  * @param {String} options.password - login password
  * @param {String} options.steamCmdDir - path to steamcmd install directory
- * @param {String} options.serverFilesDir - path to server files base directory
+ * @param {String} options.downloadDir - path to server files base directory
  * @param {Stream.Passthrough} outputSink - output sink for verbose messages
  * @param {Stream.Passthrough} progressSink - output sink for progress messages
  * @param {Stream.PassThrough} commandSink - input sink for commands (currently only supports "cancel")
@@ -58,7 +62,7 @@ export function steamCmdDownloadAppid(
     username: '',
     password: '',
     steamCmdDir: '',
-    serverFilesDir: '',
+    downloadDir: '',
   },
   outputSink = Stream.PassThrough,
   progressSink = Stream.PassThrough,
@@ -95,16 +99,14 @@ export function steamCmdDownloadAppid(
       ? path.normalize(path.resolve(options.steamCmdDir)) 
       : '';
 
-    // and serverFilesDir
+    // and downloadDir
     // eslint-disable-next-line no-prototype-builtins
-    const serverFilesDir = options.hasOwnProperty('serverFilesDir')
-      ? path.normalize(path.resolve(options.serverFilesDir))
-      : '';
+    const downloadDir = options.hasOwnProperty('downloadDir') ? path.normalize(path.resolve(options.downloadDir)) : '';
 
     // If either are empty, bail out
-    if (steamCmdDir === '' || serverFilesDir === '') {
-      log.error('steamCmdDownloadAppid called without steamCmdDir or serverFilesDir');
-      return reject(new Error('steamCmdDir and serverFilesDir required'));
+    if (steamCmdDir === '' || downloadDir === '') {
+      log.error('steamCmdDownloadAppid called without steamCmdDir or downloadDir');
+      return reject(new Error('steamCmdDir and downloadDir required'));
     }
 
     // Verify caller provided an appid
@@ -115,39 +117,47 @@ export function steamCmdDownloadAppid(
 
     // Clean up old game files if specified
     if (serverFilesForce) {
-      if (process.env.DEBUG) {
-        log.debug(`steamCmdDownloadAppid options.serverFilesForce is true, removing old server installation`);
+      if (debug) {
+        const line = 'steamCmdDownloadAppid options.serverFilesForce is true, removing old server installation';
+        log.warn(line);
+        outputSink.push(
+          JSON.stringify({
+            timestamp: isoTimestamp(),
+            line: line,
+          }),
+        );
       }
-      fs.rmSync(path.normalize(path.resolve(`${serverFilesDir}`)), { recursive: true, force: true });
+      fs.rmSync(downloadDir, { recursive: true, force: true });
     }
 
-    // Create serverFilesDir if necessary
-    fs.access(serverFilesDir, fs.constants.F_OK | fs.constants.W_OKAY, (error) => {
-      if (error && error.code === 'ENOENT') {
-        log.info(`Creating server files directory at ${serverFilesDir}`);
+    // Create downloadDir if necessary
+    try {
+      fs.accessSync(downloadDir, fs.constants.F_OK | fs.constants.W_OKAY);
+    } catch (error) {
+      if (error && error.code == 'ENOENT') {
+        log.info(`Creating server files directory at ${downloadDir}`);
         try {
           // eslint-disable-next-line security/detect-non-literal-fs-filename
-          fs.mkdirSync(path.normalize(path.resolve(`${serverFilesDir}`)), {
+          fs.mkdirSync(downloadDir, {
             recursive: true,
             mode: 0o755,
           });
-        } catch (error2) {
-          log.error(error2);
-          return reject(error2);
+        } catch (error) {
+          log.error(error);
+          return reject(error);
         }
       } else {
         log.error(error);
         return reject(error);
       }
-    });
-    log.debug('here');
+    }
 
     // Setup steamcmd command line / inline script
     const steamcmdCommandLine = [];
 
     // Setup install dir
     // eslint-disable-next-line no-useless-escape
-    steamcmdCommandLine.push(`+force_install_dir ${serverFilesDir}`);
+    steamcmdCommandLine.push(`+force_install_dir ${downloadDir}`);
 
     // Handle login credentials
     anonymous
@@ -163,7 +173,7 @@ export function steamCmdDownloadAppid(
     steamcmdCommandLine.push('+quit');
 
     // Log that we're about to run steamcmd
-    log.info(`Spawning SteamCMD to download/update appid ${appid} in ${serverFilesDir}`);
+    log.info(`Spawning SteamCMD to download/update appid ${appid} in ${downloadDir}`);
 
     // Now actually run steamcmd
     runSteamCmd(
@@ -177,6 +187,7 @@ export function steamCmdDownloadAppid(
     )
       .then((result) => {
         // Bubble up the exit code
+        if (debug) log.debug('steamcmd result:', result);
         return resolve(result);
       })
       .catch((error) => {
@@ -211,53 +222,51 @@ export function steamCmdDownloadSelf(
 
     // If force is set, remove all steamcmd files
     if (options.force) {
-      if (process.env.DEBUG) {
+      if (debug) {
         log.debug(`steamCmdDownloadSelf options.force is true, removing old steamcmd installation`);
       }
-      fs.rmSync(path.normalize(path.resolve(`${steamCmdDir}`)), { recursive: true, force: true });
+      try {
+        fs.rmSync(path.normalize(path.resolve(`${steamCmdDir}`)), { recursive: true, force: true });
+      } catch (error) {
+        return reject(error);
+      }
     }
 
-    // Create steamCmdDir if necessary
-    fs.access(steamCmdDir, fs.constants.F_OK | fs.constants.W_OKAY, (error) => {
+    // Check to see if steamcmd exists and we can execute it
+    try {
+      fs.accessSync(
+        path.normalize(path.resolve(`${steamCmdDir}/linux32/steamcmd`)),
+        fs.constants.F_OK | fs.constants.X_OKAY,
+      );
+      // Steamcmd exists and we can execute it, we're done
+      return resolve();
+    } catch (error) {
+      // It doesn't exist
       if (error && error.code === 'ENOENT') {
-        log.info(`Creating steamcmd directory at ${steamCmdDir}`);
+        log.info(`Downloading Initial SteamCMD Binary`);
+        // Download the tar.gz from Valve and unpack it
         try {
+          fs.rmSync(path.normalize(path.resolve(`${steamCmdDir}`)), { recursive: true, force: true });
           // eslint-disable-next-line security/detect-non-literal-fs-filename
           fs.mkdirSync(path.normalize(path.resolve(`${steamCmdDir}`)), {
             recursive: true,
             mode: 0o755,
           });
+          downloadFile(steamcmdUrl, steamCmdDir, { untar: true })
+            .then(() => {
+              return resolve();
+            })
+            .catch((error) => {
+              return reject(error);
+            });
         } catch (error) {
+          // Bubble up any errors
           return reject(error);
         }
+      } else {
+        return reject(error);
       }
-    });
-
-    // Check to see if steamcmd exists and we can execute it
-    fs.access(
-      path.normalize(path.resolve(`${steamCmdDir}/linux32/steamcmd`)),
-      fs.constants.F_OK | fs.constants.X_OKAY,
-      async (error) => {
-        // if we get an ENOENT error then the file doesn't exist
-        if (error && error.code === 'ENOENT') {
-          log.info(`Downloading Initial SteamCMD Binary`);
-          // Download the tar.gz from Valve and unpack it
-          try {
-            fs.rmSync(path.normalize(path.resolve(`${steamCmdDir}`)), { recursive: true, force: true });
-            // eslint-disable-next-line security/detect-non-literal-fs-filename
-            fs.mkdirSync(path.normalize(path.resolve(`${steamCmdDir}`)), {
-              recursive: true,
-              mode: 0o755,
-            });
-            await downloadFile(steamcmdUrl, steamCmdDir, { untar: true });
-            return resolve();
-          } catch (error) {
-            // Bubble up any errors
-            return reject(error);
-          }
-        }
-      },
-    );
+    }
   });
 }
 
@@ -317,7 +326,7 @@ export function runSteamCmd(
     const steamcmdCommandLineNormalized = steamcmdCommandLine.join(' ').split(' ');
 
     // Log our sanitized steamcmd script
-    if (process.env.DEBUG) {
+    if (debug) {
       log.debug(`Steamcmd script (runSteamCmd):`, logDisplayCmdline);
     }
 
@@ -328,6 +337,9 @@ export function runSteamCmd(
     var cancelInProgress = false;
 
     try {
+      if (debug) {
+        log.debug('Attempting to spawn steamcmd...');
+      }
       // Spawn steamcmd in a pty
       steamcmdChild = pty.spawn(
         path.normalize(path.resolve(`${options.steamCmdDir}/linux32/steamcmd`)),
@@ -352,11 +364,6 @@ export function runSteamCmd(
       if (command.command === 'cancel') {
         cancelInProgress = true;
         steamcmdChild.kill('SIGTERM');
-        steamcmdChild.onExit((exitCode) => {
-          exitCode.reason = 'canceled';
-          commandSink.push(JSON.stringify(exitCode));
-          return resolve(exitCode);
-        });
       }
     });
 
@@ -375,7 +382,7 @@ export function runSteamCmd(
         const line = dataArray[i];
         // If that element isn't empty string (empty line)
         if (line != '') {
-          if (process.env.DEBUG_STEAMCMD) {
+          if (steamcmdDebug) {
             log.info(line);
           }
           // And push to outputSink
@@ -420,7 +427,8 @@ export function runSteamCmd(
           // Downloading an appid
           // Update state (0x61) downloading, progress: NN.NN
           const appidDownloadStateRegex =
-            /^(?: Update state )\(([0-9]x[0-9]+)\) ([A-Za-z ]*).*([0-9]+\.[0-9]+) \(([0-9]+)(?: \/ )([0-9]+)\)$/;
+            /^(?: Update state )\(([\d]x[\d]+)\) ([\w ]*)(?:\, progress\: )([\d]+\.[\d]+) \(([\d]+)(?: \/ )([\d]+)\)$/;
+          //  /^(?: Update state )\(([0-9]x[0-9]+)\) ([A-Za-z ]*).*([0-9]+\.[0-9]+) \(([0-9]+)(?: \/ )([0-9]+)\)$/;
           if (appidDownloadStateRegex.test(line)) {
             // Build the progress object to send out
             const progressSnapshot = {
@@ -455,7 +463,7 @@ export function runSteamCmd(
       // first remove our onData listener from above (and any others that it might have picked up)
       steamcmdChild.removeAllListeners();
       // push a log msg
-      if (process.env.DEBUG) {
+      if (debug) {
         log.debug(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
       }
 
@@ -468,11 +476,19 @@ export function runSteamCmd(
             line: 'Download canceled on request',
           }),
         );
+        commandSink.push(
+          JSON.stringify({
+            timestamp: isoTimestamp(),
+            status: 'ackCanceled',
+          }),
+        );
         code.reason = 'canceled';
+        code.status = 'canceled';
+        code.error = false;
         return resolve(code);
-      } else if (code.exitCode === 42 || code.signal === 7) {
+      } else if (code.exitCode === 42) {
         // Spawn steamcmd again, saving the exit code to retryExitCode
-        if (process.env.DEBUG) {
+        if (debug) {
           log.debug(`Steamcmd exited with code ${code.exitCode} due to signal ${code.signal}, re-launching...`);
         }
         outputSink.push(
@@ -495,11 +511,17 @@ export function runSteamCmd(
       } else if (code.exitCode === 0) {
         // If exit code is 0, we're done
         code.reason = 'completed';
+        code.status = 'completed';
+        code.error = false;
+        if (debug) {
+          log.warn(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
+        }
         return resolve(code);
       } else {
         // Otherwise reject any unknown exit codes
         // TODO: come back and implement retries for known exit codes
         log.warn(`Steamcmd exited with code ${code.exitCode} because of signal ${code.signal}`);
+        code.error = true;
         return reject(code);
       }
     });
