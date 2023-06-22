@@ -2,6 +2,7 @@
 
 // Our libs
 import { setupLog } from './log.mjs';
+import { parseBool } from './parseBool.mjs';
 
 // Nodejs stdlib
 import { default as fs } from 'node:fs';
@@ -13,6 +14,9 @@ import { default as qfsq } from 'qlobber-fsq';
 const log = setupLog('lib/ipc.mjs');
 
 const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gameserver-mgr';
+const ipcPath = path.resolve(`${mgrTmpDir}/ipc`);
+
+const debugIpc = parseBool(process.env.DEBUG_IPC) || false;
 
 /**
  * Setup the ipc object
@@ -28,9 +32,6 @@ export function setupIpc(moduleIdent = '') {
       return reject(err);
     }
 
-    // Normalize the path
-    const ipcPath = path.resolve(path.normalize(`${mgrTmpDir}/ipc`));
-
     // Create an ipc object
     const ipc = new qfsq.QlobberFSQ({ fsq_dir: ipcPath });
 
@@ -44,10 +45,8 @@ export function setupIpc(moduleIdent = '') {
  * @returns {void}
  */
 function checkIpcPath() {
-  // Normalize the path
-  const ipcPath = path.resolve(path.normalize(`${mgrTmpDir}/ipc`));
   try {
-    // See if it exists
+    // See if the directory exists
     // eslint-disable-next-line security/detect-non-literal-fs-filename
     if (!fs.existsSync(`${ipcPath}`)) {
       // If not, create it
@@ -70,7 +69,7 @@ function checkIpcPath() {
  * @returns {void}
  */
 export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '') {
-  if (process.env.DEBUG_IPC) {
+  if (debugIpc) {
     log.debug(`Setting ping reply for ${moduleIdent} to "${JSON.stringify(status, null, 2)}"`);
   }
 
@@ -117,4 +116,28 @@ export function setPingReply(moduleIdent = '', ipc = qfsq.QlobberFSQ, status = '
     // Send it out
     ipc.publish('_broadcast.pong', JSON.stringify(pingReply));
   });
+}
+
+/**
+ * Sends a reply to the initial request on a given channel
+ * @param {String} moduleIdent - the callers moduleIdent
+ * @param {Object} ipc - the ipc object
+ * @param {String} subchannel - the subchannel to message
+ * @param {String|Object} message - the message to send as reply.message
+ * @param {Object<String>} info - requestId and replyTo to use
+ * @param {String} info.requestId - requestId to reply to
+ * @param {String} info.replyTo - main channel to message
+ */
+export async function sendRequestReply(moduleIdent, ipc, subchannel, message, info) {
+  // Build the status message
+  const statusMsg = {
+    requestId: info.requestId || '',
+    moduleIdent: moduleIdent,
+    timestamp: Date.now(),
+    message: message instanceof Error ? message.message.toString() : message,
+    error: message instanceof Error ? true : false,
+  };
+
+  // Fire off the reply (hopefully they're listening)
+  await ipc.publish(`${info.replyTo}.${subchannel}`, JSON.stringify(statusMsg));
 }

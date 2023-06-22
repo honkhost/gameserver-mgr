@@ -11,12 +11,15 @@ import { getDirName } from '../lib/dirname.mjs';
 import { parseBool } from '../lib/parseBool.mjs';
 
 // Nodejs stdlib
-import { default as Stream } from 'node:stream';
 import { default as path } from 'node:path';
 import { default as crypto } from 'node:crypto';
 
 //
 // Start boilerplate
+// Debug modes
+const debug = parseBool(process.env.DEBUG) || false;
+
+// Module id
 const moduleIdent = 'lifecycleManager';
 
 // Populate __dirname
@@ -87,16 +90,9 @@ const steamcmdForceValidate = parseBool(process.env.STEAMCMD_INITIAL_DOWNLOAD_VA
 const serverConfigRepo = process.env.SERVER_CONFIG_REPO || false;
 // Force remove config and re-clone?
 // Default: do 'git pull' on the config dir
-const serverConfigFilesForce = process.env.SERVER_CONFIG_FILES_FORCE || false;
+const serverConfigFilesForce = parseBool.process.env.SERVER_CONFIG_FILES_FORCE || false;
 // SSH key to use
 const serverConfigRepoSshKey = process.env.SERVER_CONFIG_SSH_KEY || false;
-
-// Options to pass downloadUpdateGameConfigGit below
-const downloadUpdateGameConfigGitOptions = {
-  repoUrl: '',
-  privKey: '',
-  gameConfigDir: serverFilesConfigDir,
-};
 
 // Keep track of other modules
 const moduleStatus = {
@@ -126,12 +122,23 @@ ipc.on('start', async () => {
   // Tell everyone we're alive
   setPingReply(moduleIdent, ipc, 'running');
 
+  // Acquire a lock for our instance
+  try {
+    await lockFile(`${instanceId}-lifecycleLock`);
+  } catch (error) {
+    if (error.code == 'EEXIST') {
+      log.error('Could not acquire lifecycleLock', error);
+      exit(moduleIdent, ipc, 1);
+    }
+  }
+
   // Wait for downloadManager to be available
   // We give it extra time as this is our initial startup
   try {
     await waitModuleRunning('downloadManager', { timeout: 60 });
   } catch (error) {
     log.error('Timeout waiting for downloadManager, exiting...');
+    exit(moduleIdent, ipc, 2);
   }
   // Ask downloadManager to download our base game
   try {
@@ -155,12 +162,12 @@ ipc.on('start', async () => {
     const downloadResult = await downloadUpdateGame(downloadUpdateGameOptions);
     // if it failed out, throw
     // TODO: retry gracefully
-    if (downloadResult.message.reason != 'completed') {
-      log.error(`Unable to download game ${gameId}`);
+    if (downloadResult.message.status != 'completed') {
+      log.error(`Unable to download game ${gameId}`, downloadResult);
       exit(moduleIdent, ipc, 3);
     } else {
       // if it succeeded, continue
-      log.debug('downloadResult:', downloadResult);
+      if (debug) log.debug('downloadResult:', downloadResult);
     }
   } catch (error) {
     // Throw any unknown errors
@@ -179,7 +186,23 @@ ipc.on('start', async () => {
 
   // Ask it to download configs from git
   try {
-    await downloadUpdateGameConfigGit(downloadUpdateGameConfigGitOptions);
+    // Options to pass downloadUpdateServerConfigGitOptions below
+    const downloadUpdateServerConfigGitOptions = {
+      timeout: 30,
+      instanceId: instanceId,
+      repoUrl: serverConfigRepo,
+      privKey: serverConfigRepoSshKey,
+      serverConfigDir: serverFilesConfigDir,
+      serverConfigFilesForce: serverConfigFilesForce,
+    };
+    const gitUpdateResult = await downloadUpdateServerConfigGit(downloadUpdateServerConfigGitOptions);
+    if (gitUpdateResult.message.status != 'completed') {
+      log.error('Unable to download server configuration from git', gitUpdateResult);
+      exit(moduleIdent, ipc, 4);
+    } else {
+      if (debug) log.debug('gitUpdateResult', gitUpdateResult);
+    }
+    // Do something, continue
   } catch (error) {
     log.error(error);
     exit(moduleIdent, ipc, 2);
@@ -286,13 +309,18 @@ function downloadUpdateGame(
     const request = {
       requestId: requestId,
       replyTo: `${moduleIdent}.${requestId}`,
-      gameId: options.gameId,
-      validate: options.validate,
-      steamCmdForce: options.steamCmdForce,
-      steamCmdDir: options.steamCmdDir,
-      serverFilesForce: options.serverFilesForce,
-      downloadDir: options.downloadDir,
-      anonymous: options.anonymous,
+      message: {
+        gameId: options.gameId,
+        validate: options.validate,
+        steamCmdForce: options.steamCmdForce,
+        steamCmdDir: options.steamCmdDir,
+        serverFilesForce: options.serverFilesForce,
+        downloadDir: options.downloadDir,
+        anonymous: options.anonymous,
+        username: options.username,
+        password: options.password,
+        steamcmdMultiFactorEnabled: options.steamcmdMultiFactorEnabled,
+      },
     };
 
     log.info(`Sending request for ${request.gameId} to the download manager`);
@@ -341,17 +369,17 @@ function waitDownloadComplete(channel) {
 
     ipc.subscribe(`${channel}.progress`, (data) => {
       const progress = JSON.parse(data);
-      // log.debug(`Progress message:`, progress);
+      // if (debug) log.debug`Progress message:`, progress);
     });
 
     ipc.subscribe(`${channel}.output`, (data) => {
       const output = JSON.parse(data);
-      // log.debug('Output message:', output);
+      // if (debug) log.debug('Output message:', output);
     });
 
     ipc.subscribe(`${channel}.finalStatus`, (data) => {
       const finalStatus = JSON.parse(data);
-      if (process.env.DEBUG) log.debug('finalStatus:', finalStatus);
+      if (debug) log.debug('finalStatus:', finalStatus);
 
       ipc.unsubscribe(`${channel}.ack`);
       ipc.unsubscribe(`${channel}.nack`);
@@ -370,11 +398,14 @@ function waitDownloadComplete(channel) {
   });
 }
 
-function downloadUpdateGameConfigGit(
+function downloadUpdateServerConfigGit(
   options = {
+    timeout: 30,
+    instanceId: '',
     repoUrl: '',
     privKey: '',
-    gameConfigDir: '',
+    serverConfigDir: '',
+    serverConfigFilesForce: '',
   },
 ) {
   return new Promise((resolve, reject) => {

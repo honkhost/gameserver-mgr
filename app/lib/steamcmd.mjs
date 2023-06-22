@@ -3,6 +3,7 @@
 // Our libs
 import { downloadFile } from './fileDownload.mjs';
 import { setupLog, isoTimestamp } from './log.mjs';
+import { parseBool } from './parseBool.mjs';
 
 // Nodejs stdlib
 import { default as fs } from 'node:fs';
@@ -15,13 +16,13 @@ import { default as pty } from 'node-pty';
 
 const log = setupLog('lib/steamcmd.mjs');
 
+// Debug modes
+const debug = parseBool(process.env.DEBUG) || false;
+const steamcmdDebug = parseBool(process.env.DEBUG_STEAMCMD) || false;
+
 // Download url for initial steamcmd binary
 const steamcmdUrl =
   process.env.STEAMCMD_DOWNLOAD_URL || 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz';
-
-// Debug modes
-const debug = process.env.DEBUG || false;
-const steamcmdDebug = process.env.DEBUG_STEAMCMD || false;
 
 // Signal forwarder for steamcmd child processes
 // We need this so we don't attach multiple listeners to process.on('SIGTERM')
@@ -331,10 +332,19 @@ export function runSteamCmd(
     }
 
     // Setup the steamcmdChild variable up here
-    var steamcmdChild = null;
+    var steamcmdChild = false;
 
     // And a "cancel in progress" one
     var cancelInProgress = false;
+
+    // Listen to commandSink for cancel commands
+    commandSink.on('data', (command) => {
+      command = JSON.parse(command);
+      if (command.command === 'cancel' && steamcmdChild) {
+        cancelInProgress = true;
+        steamcmdChild.kill('SIGTERM');
+      }
+    });
 
     try {
       if (debug) {
@@ -357,15 +367,6 @@ export function runSteamCmd(
       log.error('error spawning steamcmd:', error);
       return reject(error);
     }
-
-    // Listen to commandSink for cancel commands
-    commandSink.on('data', (command) => {
-      command = JSON.parse(command);
-      if (command.command === 'cancel') {
-        cancelInProgress = true;
-        steamcmdChild.kill('SIGTERM');
-      }
-    });
 
     // When steamcmd outputs, output it to console
     // Yes we have to do that grossness where we split on '\r\n'
