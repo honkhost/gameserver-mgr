@@ -311,6 +311,10 @@ async function downloadUpdateRepo(request) {
         // Do the git pull
         if (debug) log.debug(`Pulling ${request.repoUrl}`);
         await git.pull({ '--ff-only': null });
+
+        // Checkout the specified branch/tag/commit
+        if (debug) log.debug(`Checking out ${request.repoBranch}`);
+        await git.checkout(request.repoBranch);
       } catch (error) {
         // Log and reply with errors
         log.error(error);
