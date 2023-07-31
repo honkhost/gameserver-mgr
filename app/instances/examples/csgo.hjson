@@ -1,6 +1,4 @@
-'use strict';
-
-export const instance = {
+{
   //
   // General gameserver info
   //
@@ -11,7 +9,7 @@ export const instance = {
   // Just a uuidv4 for internal use
   // Don't use this one - go here to generate a new one (or use your own tooling):
   // https://www.uuidgenerator.net/version4
-  uuid: 'adc8f3bc-f328-469f-b29b-d7e18133f665',
+  uuid: '00000000-0000-0000-0000-000000000000',
 
   // Displayname for admin tools
   displayName: 'A Honk.Host Example Casual Server',
@@ -85,4 +83,4 @@ export const instance = {
   //   '+game_mode 0',
   //   '+map de_nuke',
   // ],
-};
+}
