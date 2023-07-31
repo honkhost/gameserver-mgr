@@ -81,7 +81,7 @@ ipc.subscribe('configManager.downloadUpdateRepo', downloadUpdateRepo);
  * @param {String} request.repoBranch - repo branch
  * @param {String} request.repoDir - parent dir for config storage
  * @param {String} request.instanceId - instanceId - my-casual-server
- * @param {String} request.action - git action to take (clone | pull)
+ * @param {String} request.action - git action to take (clone | pull | checkout)
  * @param {Boolean} request.clean - force remove old repo directory before cloning
  */
 async function downloadUpdateRepo(request) {
@@ -253,27 +253,24 @@ async function downloadUpdateRepo(request) {
     if (debug) log.debug(info);
   };
 
-  const repoParentTempPath = request.repoDir.split('/');
-  repoParentTempPath.pop();
-  const repoParentDir = path.resolve(repoParentTempPath.join('/'));
-  if (debug) log.debug(`Working in dir ${repoParentDir}`);
-
   switch (request.action) {
     // They want git clone
     case 'clone':
       // Attempt to clone the repo
       try {
+        if (debug) log.debug(`Cloning ${request.repoUrl} to ${path.resolve(request.repoDir)}`);
+
         // Clean up old game files if specified
         if (request.clean) {
           if (debug) {
-            const line = 'downloadUpdateRepo request.clean is true, removing existing on disk repo';
+            const line = 'downloadUpdateRepo.clone request.clean is true, removing existing on disk repo';
             log.warn(line);
           }
           fs.rmSync(path.resolve(request.repoDir), { recursive: true, force: true });
         }
+
         // Setup git library
         var git = simpleGit({
-          baseDir: repoParentDir,
           progress: gitProgress,
         });
 
@@ -282,11 +279,12 @@ async function downloadUpdateRepo(request) {
         await git.clone(request.repoUrl, path.resolve(request.repoDir));
 
         // Checkout the specified branch/tag/commit
-        if (debug) log.debug(`Checking out ${request.repoBranch}`);
+        // First reset our git library with the new cwd
         git = simpleGit({
           baseDir: path.resolve(request.repoDir),
           progress: gitProgress,
         });
+        // Then checkout
         await git.checkout(request.repoBranch);
       } catch (error) {
         // Log and reply with errors
@@ -298,10 +296,13 @@ async function downloadUpdateRepo(request) {
         return;
       }
       break;
+
     // They want git pull
     case 'pull':
       // Attempt to run git pull on the repo
       try {
+        if (debug) log.debug(`Pulling ${request.repoUrl}`);
+
         // Setup git library
         const git = simpleGit({
           baseDir: path.resolve(request.repoDir),
@@ -311,9 +312,29 @@ async function downloadUpdateRepo(request) {
         // Do the git pull
         if (debug) log.debug(`Pulling ${request.repoUrl}`);
         await git.pull({ '--ff-only': null });
+      } catch (error) {
+        // Log and reply with errors
+        log.error(error);
+        sendRequestReply(moduleIdent, ipc, 'error', { error: error.message }, request);
+        delete runningDownloads[request.instanceId];
+        await releaseLock(globalLockId);
+        setPingReply(moduleIdent, ipc, 'error');
+        return;
+      }
+      break;
+
+    // Just a checkout
+    case 'checkout':
+      try {
+        if (debug) log.debug(`Checking out ${request.repoBranch}`);
+
+        // Setup git library
+        const git = simpleGit({
+          baseDir: path.resolve(request.repoDir),
+          progress: gitProgress,
+        });
 
         // Checkout the specified branch/tag/commit
-        if (debug) log.debug(`Checking out ${request.repoBranch}`);
         await git.checkout(request.repoBranch);
       } catch (error) {
         // Log and reply with errors
@@ -325,6 +346,7 @@ async function downloadUpdateRepo(request) {
         return;
       }
       break;
+
     // Anything else
     default:
       // We don't know how to handle this

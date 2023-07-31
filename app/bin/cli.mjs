@@ -168,7 +168,7 @@ ipc.on('start', () => {
           })
           .positional('action', {
             type: 'string',
-            describe: 'Git action to take (clone | pull)',
+            describe: 'Git action to take (clone | pull | checkout)',
             demand: true,
           })
           .positional('repo-url', {
@@ -183,7 +183,7 @@ ipc.on('start', () => {
           })
           .option('clean', {
             type: 'boolean',
-            description: 'Request removal of gameserver files before download',
+            description: 'Request removal of gameserver files before download (clone only)',
             demand: false,
             default: false,
           })
@@ -489,7 +489,7 @@ function downloadGameConfig(argv) {
     throw new Error('configLayerIdent required!');
   }
   // eslint-disable-next-line prettier/prettier
-  if ((!action || action === '') || !(action === 'clone' || action === 'pull')) {
+  if ((!action || action === '') || !(action === 'clone' || action === 'pull' || action === 'checkout')) {
     throw new Error('invalid action');
   }
 
