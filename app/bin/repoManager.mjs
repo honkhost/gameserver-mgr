@@ -17,6 +17,7 @@ import { parseBool } from '../lib/parseBool.mjs';
 import { simpleGit } from 'simple-git';
 
 // Nodejs stdlib
+import { default as fs } from 'node:fs';
 import { default as path } from 'node:path';
 import { default as crypto } from 'node:crypto';
 import { default as Stream } from 'node:stream';
@@ -63,9 +64,6 @@ const runningDownloads = {};
 //
 // Start logic
 
-// Setup git library
-const git = simpleGit();
-
 // Tell everyone we're alive
 ipc.on('start', () => {
   setPingReply(moduleIdent, ipc, 'ready');
@@ -76,21 +74,22 @@ ipc.subscribe('configManager.downloadUpdateRepo', downloadUpdateRepo);
 
 /**
  * Download/update a git repo/branch to a directory
- * @param {Object.<String, Boolean>} ipcData - the request as delivered by IPC
- * @param {String} ipcData.requestId - uuidv4 - requestId
- * @param {String} ipcData.replyTo - `${moduleIdent}.${requestId}`
- * @param {Object.<String, Boolean>} ipcData.message - actual request
- * @param {String} ipcData.message.repoUrl - repo url
- * @param {String} ipcData.message.repoBranch - repo branch
- * @param {String} ipcData.message.repoDir - parent dir for config storage
- * @param {String} ipcData.message.instanceId - instancdid - my-casual-server
+ * @param {Object.<String, Boolean>} request - the request as delivered by IPC
+ * @param {String} request.requestId - uuidv4 - requestId
+ * @param {String} request.replyTo - `${moduleIdent}.${requestId}`
+ * @param {String} request.repoUrl - repo url
+ * @param {String} request.repoBranch - repo branch
+ * @param {String} request.repoDir - parent dir for config storage
+ * @param {String} request.instanceId - instanceId - my-casual-server
+ * @param {String} request.action - git action to take (clone | pull)
+ * @param {Boolean} request.clean - force remove old repo directory before cloning
  */
-async function downloadUpdateRepo(ipcData) {
-  ipcData = JSON.parse(ipcData);
-  log.info('Incoming downloadUpdateRepo request:', ipcData);
-  const request = ipcData.message;
-  request.requestId = ipcData.requestId;
-  request.replyTo = ipcData.replyTo;
+async function downloadUpdateRepo(request) {
+  request = JSON.parse(request);
+  log.info('Incoming downloadUpdateRepo request:', request);
+
+  // eslint-disable-next-line no-prototype-builtins
+  request.force = request.hasOwnProperty('force') ? parseBool(request.force) : false;
 
   // Verify caller provided a repo url
   if (!request.repoUrl) {
@@ -152,6 +151,7 @@ async function downloadUpdateRepo(ipcData) {
 
   // First acquire a config download lock for the instance
   try {
+    if (debug) log.debug('Attempting to acquire global repoManager lock');
     await spinLock(globalLockId, 30);
   } catch (error) {
     log.error(`Error while spinLocking on ${globalLockId}`, error);
@@ -162,6 +162,7 @@ async function downloadUpdateRepo(ipcData) {
   // Make sure nobody has config files mounted
   try {
     // spinClear on our "config files are mounted somewhere" pattern
+    if (debug) log.debug('Waiting for config locks to clear');
     await spinClear(configMountLockCheckPattern, 30);
   } catch (error) {
     // We keep globalLockId active - manual cleanup may be required on an unknown error condition
@@ -182,7 +183,7 @@ async function downloadUpdateRepo(ipcData) {
   // This one is for sending commands down to the download controller
   runningDownloads[request.instanceId].commandSink = new Stream.PassThrough({ end: false });
 
-  // When it receives something, forward it to ipc
+  // When outputSink receives something, forward it to ipc
   runningDownloads[request.instanceId].outputSink.on('data', (data) => {
     const output = data.toString();
     // Add the line to lastLog
@@ -195,6 +196,7 @@ async function downloadUpdateRepo(ipcData) {
     // Tell the caller we have some output
     sendRequestReply(moduleIdent, ipc, 'output', { line: output }, request);
   });
+
   // Let everyone else know what we're doing
   setPingReply(moduleIdent, ipc, 'downloading');
 
@@ -210,35 +212,123 @@ async function downloadUpdateRepo(ipcData) {
     request,
   );
 
-  // Download the repo
-  if (debug) log.debug(`About to clone ${request.repoUrl} to ${request.repoDir}`);
+  // Setup the progress handler (we do it in here so we have access to the request object)
+  const gitProgress = (info) => {
+    if (info != null) {
+      var method = '';
+      var stage = '';
+      var progress = '';
+      // eslint-disable-next-line no-prototype-builtins
+      if (info.hasOwnProperty('method')) method = info.method;
 
-  // Setup the progress handler
-  const gitProgress = (method, stage, progress) => {
-    const line = `git.${method} ${stage} stage ${progress}% complete`;
-    log.debug(line);
-    // Add the line to lastLog
-    runningDownloads[request.instanceId].lastLog.unshift(line);
-    // Truncate lastLog
-    runningDownloads[request.instanceId].lastLog.length = Math.min(
-      runningDownloads[request.instanceId].lastLog.length,
-      1000,
-    );
-    // Tell the caller we have some output
-    sendRequestReply(moduleIdent, ipc, 'output', { line: line }, request);
+      // eslint-disable-next-line no-prototype-builtins
+      if (info.hasOwnProperty('stage')) stage = info.stage;
+
+      // eslint-disable-next-line no-prototype-builtins
+      if (info.hasOwnProperty('progress')) progress = info.progress;
+
+      const line = `git.${method} ${stage} ${progress}%`;
+      if (debug) log.debug(line);
+      // Add the line to lastLog
+      runningDownloads[request.instanceId].lastLog.unshift(line);
+      // Truncate lastLog
+      runningDownloads[request.instanceId].lastLog.length = Math.min(
+        runningDownloads[request.instanceId].lastLog.length,
+        1000,
+      );
+      // Tell the caller we have some output
+      sendRequestReply(
+        moduleIdent,
+        ipc,
+        'output',
+        {
+          line: {
+            timestamp: isoTimestamp(),
+            line: line,
+          },
+        },
+        request,
+      );
+    }
+    if (debug) log.debug(info);
   };
 
-  // Attempt to clone the repo
-  try {
-    await git.clone(request.repoUrl, path.resolve(request.repoDir), {
-      progress: gitProgress,
-    });
-  } catch (error) {
-    log.error(error);
-    sendRequestReply(moduleIdent, ipc, 'error', { error: error }, request);
-    delete runningDownloads[request.instanceId];
-    await releaseLock(globalLockId);
-    return;
+  const repoParentTempPath = request.repoDir.split('/');
+  repoParentTempPath.pop();
+  const repoParentDir = path.resolve(repoParentTempPath.join('/'));
+  if (debug) log.debug(`Working in dir ${repoParentDir}`);
+
+  switch (request.action) {
+    // They want git clone
+    case 'clone':
+      // Attempt to clone the repo
+      try {
+        // Clean up old game files if specified
+        if (request.clean) {
+          if (debug) {
+            const line = 'downloadUpdateRepo request.clean is true, removing existing on disk repo';
+            log.warn(line);
+          }
+          fs.rmSync(path.resolve(request.repoDir), { recursive: true, force: true });
+        }
+        // Setup git library
+        var git = simpleGit({
+          baseDir: repoParentDir,
+          progress: gitProgress,
+        });
+
+        // Do the git clone
+        if (debug) log.debug(`Cloning ${request.repoUrl}`);
+        await git.clone(request.repoUrl, path.resolve(request.repoDir));
+
+        // Checkout the specified branch/tag/commit
+        if (debug) log.debug(`Checking out ${request.repoBranch}`);
+        git = simpleGit({
+          baseDir: path.resolve(request.repoDir),
+          progress: gitProgress,
+        });
+        await git.checkout(request.repoBranch);
+      } catch (error) {
+        // Log and reply with errors
+        log.error(error);
+        sendRequestReply(moduleIdent, ipc, 'error', { error: error.message }, request);
+        delete runningDownloads[request.instanceId];
+        await releaseLock(globalLockId);
+        setPingReply(moduleIdent, ipc, 'error');
+        return;
+      }
+      break;
+    // They want git pull
+    case 'pull':
+      // Attempt to run git pull on the repo
+      try {
+        // Setup git library
+        const git = simpleGit({
+          baseDir: path.resolve(request.repoDir),
+          progress: gitProgress,
+        });
+
+        // Do the git pull
+        if (debug) log.debug(`Pulling ${request.repoUrl}`);
+        await git.pull({ '--ff-only': null });
+      } catch (error) {
+        // Log and reply with errors
+        log.error(error);
+        sendRequestReply(moduleIdent, ipc, 'error', { error: error.message }, request);
+        delete runningDownloads[request.instanceId];
+        await releaseLock(globalLockId);
+        setPingReply(moduleIdent, ipc, 'error');
+        return;
+      }
+      break;
+    // Anything else
+    default:
+      // We don't know how to handle this
+      sendRequestReply(moduleIdent, ipc, 'error', { error: 'unsupported git action' }, request);
+      delete runningDownloads[request.instanceId];
+      await releaseLock(globalLockId);
+      setPingReply(moduleIdent, ipc, 'error');
+      return;
   }
 
   // Send a response
@@ -247,6 +337,9 @@ async function downloadUpdateRepo(ipcData) {
   };
   // Send a final reply to the request
   sendRequestReply(moduleIdent, ipc, 'finalStatus', result, request);
+
+  delete runningDownloads[request.instanceId];
+  await releaseLock(globalLockId);
 
   // Done
   setPingReply(moduleIdent, ipc, 'ready');

@@ -157,13 +157,18 @@ ipc.on('start', () => {
       },
     )
     .command(
-      'downloadGameConfig <instance-id> <repo-url> <layer-ident>',
+      'downloadGameConfig <instance-id> <action> <repo-url> <layer-ident>',
       'Download game configuration from a git repo',
       (yargs) => {
         return yargs
           .positional('instance-id', {
             type: 'string',
             describe: 'Instance identifier',
+            demand: true,
+          })
+          .positional('action', {
+            type: 'string',
+            describe: 'Git action to take (clone | pull)',
             demand: true,
           })
           .positional('repo-url', {
@@ -187,6 +192,12 @@ ipc.on('start', () => {
             description: 'Root directory for install',
             demand: false,
             default: '/opt/gsm',
+          })
+          .option('branch', {
+            type: 'string',
+            description: 'Repo branch to clone',
+            demand: false,
+            default: 'main',
           });
       },
       (argv) => {
@@ -466,6 +477,7 @@ function downloadGameConfig(argv) {
   const repoBranch = argv['branch'] || 'main';
   const clean = argv['clean'] || false;
   const configLayerIdent = argv['layer-ident'] || false;
+  const action = argv['action'] || 'clone';
 
   if (!instanceId || instanceId === '') {
     throw new Error('instanceId required!');
@@ -475,6 +487,10 @@ function downloadGameConfig(argv) {
   }
   if (!configLayerIdent || configLayerIdent === '') {
     throw new Error('configLayerIdent required!');
+  }
+  // eslint-disable-next-line prettier/prettier
+  if ((!action || action === '') || !(action === 'clone' || action === 'pull')) {
+    throw new Error('invalid action');
   }
 
   const rootDir = argv['root-directory'] || '/opt/gsm';
@@ -490,6 +506,7 @@ function downloadGameConfig(argv) {
     repoUrl: repoUrl,
     repoDir: repoDir,
     repoBranch: repoBranch,
+    action: action,
     clean: clean,
   };
 
@@ -506,14 +523,24 @@ function downloadGameConfig(argv) {
       // Error messages
       ipc.subscribe(`${subscribeTo}.error`, (message) => {
         const error = JSON.parse(message);
-        log.error(`Error while downloading config for ${request.instanceId}: ${error}`);
+        log.debug(error);
+        log.error(`Error while downloading config for ${request.instanceId}: ${error.error}`);
+        exit(moduleIdent, ipc, 1);
+      });
+
+      // Raw download output
+      ipc.subscribe(`${subscribeTo}.output`, (output) => {
+        output = JSON.parse(output);
+        const logLine = output.line;
+        if (steamcmdDebug) log.debug(`[${logLine.timestamp}] ${logLine.line}`);
       });
 
       // Subscribe to finalStatus messages - download completed / failed / canceled / etc
       ipc.subscribe(`${subscribeTo}.finalStatus`, (status) => {
         status = JSON.parse(status);
-        log.info(`Config download status update for ${request.instanceId}:`, status.message.status);
-        if (status.message.status === 'completed') {
+        if (debug) log.debug(status);
+        log.info(`Config download status update for ${request.instanceId}:`, status.status);
+        if (status.status === 'completed') {
           exit(moduleIdent, ipc, 0);
         }
       });

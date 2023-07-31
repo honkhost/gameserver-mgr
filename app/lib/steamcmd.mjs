@@ -76,7 +76,7 @@ export function steamCmdDownloadAppid(
 
     // (dangerous!) force remove all server files before installing
     // eslint-disable-next-line no-prototype-builtins
-    const serverFilesForce = options.hasOwnProperty('serverFilesForce') ? options.serverFilesForce : false;
+    const serverFilesForce = options.hasOwnProperty('serverFilesForce') ? parseBool(options.serverFilesForce) : false;
 
     // do we force a validation check
     // eslint-disable-next-line no-prototype-builtins

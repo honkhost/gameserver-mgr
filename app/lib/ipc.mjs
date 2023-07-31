@@ -13,7 +13,7 @@ import { default as qfsq } from 'qlobber-fsq';
 
 const log = setupLog('lib/ipc.mjs');
 
-const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gameserver-mgr';
+const mgrTmpDir = process.env.MANAGER_TMPDIR || '/tmp/gsm';
 const ipcPath = path.resolve(`${mgrTmpDir}/ipc`);
 
 const debugIpc = parseBool(process.env.DEBUG_IPC) || false;
